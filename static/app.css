@@ -1,0 +1,508 @@
+:root{
+  --bg:#ffffff;
+  --surface:#ffffff;
+  --border:#e5e7eb;
+  --text:#0f172a;
+  --muted:#64748b;
+  --blue:#2563eb;
+  --blue2:#1d4ed8;
+  --red:#ef4444;
+  --shadow: 0 10px 25px rgba(2,6,23,0.06);
+}
+*{box-sizing:border-box}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--text);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+}
+
+/* HERO */
+.hero{
+  height:min(200px);
+  background: linear-gradient(135deg, #f8fafc 0%, #eef2ff 45%, #eff6ff 100%);
+  border-bottom:1px solid var(--border);
+  display:flex;
+}
+.hero-inner{
+  width:1200px; max-width:100%;
+  margin:0 auto;
+  padding:2.4rem 2.2rem;
+  display:flex; justify-content:space-between; align-items:flex-end;
+}
+.hero h1{margin:0; font-size:52px; font-weight:900; letter-spacing:-0.04em}
+.hero p{margin:10px 0 0; color:var(--muted); font-size:14px; font-weight:500}
+.badge{
+  padding:10px 12px;
+  border-radius:999px;
+  background:#fff;
+  border:1px solid var(--border);
+  color:var(--text);
+  font-size:13px;
+  font-weight:700;
+  box-shadow: var(--shadow);
+}
+
+/* PAGE GRID */
+.page{
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 1.4rem 2.2rem 2.2rem;
+  display:grid;
+  grid-template-columns: 320px 1fr;
+  gap: 16px;
+}
+@media (max-width: 980px){
+  .page{grid-template-columns: 1fr;}
+}
+
+/* Make sidebar (with dropdowns) always stack above main/map */
+.page > aside{
+  position: relative;
+  z-index: 99999;
+}
+
+/* Keep the map lower */
+.page > main{
+  position: relative;
+  z-index: 1;
+}
+
+/* TomSelect dropdown must be super high too */
+.ts-wrapper{ position: relative; z-index: 100000; }
+.ts-dropdown{ z-index: 100001 !important; }
+
+/* ✅ IMPORTANT: main stack makes map full-width and details below it */
+.mainStack{
+  margin-top:16px;
+  display:grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+.panel{
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 16px;
+  box-shadow: var(--shadow);
+}
+.panel + .panel{margin-top:16px}
+.panel h2{margin:0 0 12px; font-size:16px; font-weight:900}
+
+label{display:block; font-size:12px; color:var(--muted); margin-bottom:6px; font-weight:600}
+.grid2{display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:12px}
+
+.grid3{
+  display:grid;
+  grid-template-columns:repeat(3, minmax(0,1fr));
+  gap:12px;
+}
+@media (max-width: 980px){
+  .grid3{ grid-template-columns:1fr; }
+}
+
+.actions{margin-top:12px; display:flex; justify-content:flex-end; gap:10px}
+.primary{
+  background: var(--blue);
+  border: 1px solid var(--blue2);
+  color: #fff;
+  border-radius: 14px;
+  padding: 10px 14px;
+  font-weight: 800;
+  cursor:pointer;
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+}
+.primary:hover{filter:brightness(0.97)}
+.secondary{
+  background:#fff;
+  border:1px solid var(--border);
+  color:var(--text);
+  border-radius:14px;
+  padding:10px 12px;
+  font-weight:800;
+  cursor:pointer;
+}
+.secondary:hover{background:#f8fafc}
+
+.rowBetween{display:flex; justify-content:space-between; align-items:center; gap:12px}
+.chip{
+  font-weight:800;
+  color:var(--text);
+  background:#f8fafc;
+  border:1px solid var(--border);
+  border-radius:999px;
+  padding:6px 10px;
+  font-size:12px;
+}
+
+.divider{height:1px; background:var(--border); margin:14px 0}
+
+/* Slider */
+.slider{
+  width:100%;
+  appearance:none;
+  height:8px;
+  border-radius:999px;
+  background:#e2e8f0;
+  outline:none;
+  margin-top:6px;
+}
+.slider::-webkit-slider-thumb{
+  appearance:none;
+  width:20px;
+  height:20px;
+  border-radius:999px;
+  background: var(--blue);
+  border: 3px solid #fff;
+  box-shadow: 0 6px 16px rgba(37,99,235,0.25);
+  cursor:pointer;
+}
+.slider::-moz-range-thumb{
+  width:20px;
+  height:20px;
+  border-radius:999px;
+  background: var(--blue);
+  border: 3px solid #fff;
+  box-shadow: 0 6px 16px rgba(37,99,235,0.25);
+  cursor:pointer;
+}
+.sliderTicks{
+  margin-top:8px;
+  display:flex;
+  justify-content:space-between;
+  color:var(--muted);
+  font-size:11px;
+  font-weight:700;
+}
+
+/* Sidebar checkbox filters */
+.filterTitle{font-weight:900; font-size:13px}
+.filterHint{color:var(--muted); font-size:12px; font-weight:600; margin-top:2px}
+
+.filterActions{
+  display:flex;
+  align-items:center;
+  gap:10px;
+}
+
+.collapseBtn{
+  border:1px solid var(--border);
+  background:#fff;
+  color:var(--text);
+  border-radius:999px;
+  padding:6px 10px;
+  font-weight:800;
+  font-size:12px;
+  cursor:pointer;
+}
+.collapseBtn:hover{ background:#f8fafc; }
+
+.collapsible{
+  overflow:hidden;
+  max-height: 900px;
+  opacity: 1;
+  transition: max-height 220ms ease, opacity 220ms ease;
+}
+.collapsible.is-collapsed{
+  max-height: 0;
+  opacity: 0;
+  pointer-events:none;
+}
+
+.searchBox{
+  width:100%;
+  padding:10px 12px;
+  border-radius:14px;
+  border:1px solid var(--border);
+  background:#fff;
+  color:var(--text);
+  outline:none;
+  font-weight:600;
+  margin-top:10px;
+}
+.searchBox::placeholder{color:#94a3b8; font-weight:600}
+
+.checkList{
+  margin-top:10px;
+  border:1px solid var(--border);
+  border-radius:14px;
+  overflow:auto;
+  max-height: 260px;
+  background:#fff;
+}
+.checkItem{
+  display:flex;
+  gap:10px;
+  align-items:flex-start;
+  padding:10px 12px;
+  border-bottom:1px solid #f1f5f9;
+}
+.checkItem:last-child{border-bottom:none}
+.checkItem input{margin-top:2px}
+.checkLabel{font-size:12px; font-weight:700; color:var(--text); line-height:1.25}
+.checkSub{font-size:11px; color:var(--muted); font-weight:600; margin-top:2px}
+
+.linkBtn{
+  background:none;
+  border:none;
+  color:var(--blue);
+  font-weight:800;
+  cursor:pointer;
+  padding:0;
+}
+.linkBtn:hover{text-decoration:underline}
+
+/* Cards */
+.cards{
+  display:grid;
+  grid-template-columns:repeat(3, minmax(0,1fr));
+  gap:12px;
+  margin-top:12px
+}
+@media (max-width: 1100px){
+  .cards{grid-template-columns:repeat(2, minmax(0,1fr));}
+}
+@media (max-width: 640px){
+  .cards{grid-template-columns:1fr;}
+}
+
+.card{
+  border-radius:16px;
+  padding:14px;
+  background:#fff;
+  border:1px solid var(--border);
+  cursor:pointer;
+}
+.card.selected{
+  border-color: rgba(37,99,235,0.45);
+  box-shadow: 0 10px 25px rgba(37,99,235,0.10);
+}
+.route{font-weight:900; margin:8px 0 10px; letter-spacing:-0.02em}
+.pills{display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:8px}
+.pill{
+  border-radius:14px;
+  padding:10px 12px;
+  background:#f8fafc;
+  border:1px solid #e2e8f0;
+}
+.k{font-size:11px; color:var(--muted); font-weight:700}
+.v{font-size:14px; font-weight:900}
+
+/* MAP */
+#map{
+  width: 100%;
+  height: 520px;
+  border-radius:16px;
+  overflow:hidden;
+  border:1px solid var(--border);
+  background:#f1f5f9;
+  position: relative;
+  z-index: 1; /* ✅ keep map lower than dropdowns */
+}
+@media (max-width: 640px){
+  #map{height: 420px;}
+}
+
+/* DETAILS (✅ remove forced min-height that causes blank space) */
+.details{
+  padding: 6px 2px;
+}
+
+/* Leg rows */
+.legRow{
+  border:1px solid var(--border);
+  background:#fff;
+  border-radius:16px;
+  padding:14px 14px;
+  margin-top:12px;
+}
+
+.legTop{
+  display:grid;
+  grid-template-columns: 1fr 1.2fr 1fr;
+  gap: 12px;
+  align-items:center;
+}
+
+.legLeft{ text-align:left; }
+.legMid{ text-align:center; }
+.legRight{ text-align:right; }
+
+.legTime{
+  font-size:18px;
+  font-weight:900;
+  letter-spacing:-0.02em;
+}
+
+.legCode{
+  font-size:12px;
+  font-weight:800;
+  color:var(--muted);
+  margin-top:2px;
+}
+
+.legCenterLine{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:10px;
+  margin-top:2px;
+}
+
+.legDash{
+  height:2px;
+  background:#e2e8f0;
+  flex:1;
+  border-radius:999px;
+}
+
+.legPlane{
+  font-size:14px;
+  color:var(--blue);
+  font-weight:900;
+}
+
+.legDuration{
+  font-size:12px;
+  font-weight:900;
+  color:var(--text);
+}
+
+.legSubLine{
+  margin-top:10px;
+  color:var(--muted);
+  font-size:12px;
+  font-weight:600;
+  line-height:1.35;
+  display:flex;
+  justify-content:space-between;
+  gap: 12px;
+  flex-wrap:wrap;
+}
+
+.legBadges{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  margin-top:10px;
+}
+
+.legBadge{
+  background:#f8fafc;
+  border:1px solid #e2e8f0;
+  border-radius:999px;
+  padding:6px 10px;
+  font-size:12px;
+  font-weight:900;
+  color:var(--text);
+}
+
+/* ✅ Mobile leg layout (still 1 leg per row, but readable) */
+@media (max-width: 720px){
+  .legTop{
+    grid-template-columns: 1fr;
+    text-align:left;
+  }
+  .legMid, .legRight{ text-align:left; }
+  .legCenterLine{ justify-content:flex-start; }
+}
+
+/* Details header */
+.detailsTitle{
+  margin:0;
+  font-size:14px;
+  font-weight:900;
+  letter-spacing:-0.01em;
+}
+.detailsSub{
+  color:var(--muted);
+  font-size:12px;
+  margin-top:6px;
+  font-weight:600;
+}
+.detailGrid{
+  margin-top:14px;
+  display:grid;
+  grid-template-columns:repeat(2, minmax(0,1fr));
+  gap:10px;
+}
+.detailBox{
+  border:1px solid var(--border);
+  background:#fff;
+  border-radius:14px;
+  padding:10px 12px;
+}
+
+/* ✅ Tom Select fixes:
+   1) solid white
+   2) remove "random blank space" (control sizing + input margins)
+   3) dropdown z-index ABOVE map
+*/
+.ts-wrapper{
+  position: relative;
+  z-index: 20000; /* ✅ above map */
+}
+.ts-control, .ts-dropdown, .ts-dropdown-content{
+  background:#fff !important;
+  opacity: 1 !important;
+}
+/* Keep the control to ONE line + truncate selected text */
+.ts-control{
+  border-radius: 14px !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: none !important;
+  display:flex !important;
+  align-items:center !important;
+  min-height: 44px !important;
+  padding: 10px 12px !important;
+
+  /* ✅ 1-line behavior */
+  flex-wrap: nowrap !important;
+  overflow: hidden !important;
+}
+
+/* The displayed selected item (single select) */
+.ts-wrapper.single .ts-control .item{
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  max-width: 100% !important;
+}
+
+/* The typing input: don't force a second line */
+.ts-control input{
+  margin: 0 !important;
+  padding: 0 !important;
+  line-height: 1.2 !important;
+  font-weight: 600 !important;
+  color: var(--text) !important;
+  opacity: 1 !important;
+
+  /* ✅ prevents wrapping / pushes ellipsis nicely */
+  flex: 1 1 auto !important;
+  width: 1px !important;
+  min-width: 0 !important;
+}
+.ts-control input::placeholder{
+  color:#94a3b8 !important;
+  opacity: 1 !important;
+}
+.ts-dropdown{
+  border-radius: 14px !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: var(--shadow) !important;
+  z-index: 20001 !important; /* ✅ above everything incl map */
+}
+.ts-dropdown-content{
+  max-height: 320px !important;
+  overflow: auto !important;
+  padding: 6px !important; /* ✅ reduces “empty” feel at top */
+}
+.ts-wrapper.single .ts-control .item{
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

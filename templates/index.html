@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block body %}
+
+<header class="hero">
+  <div class="hero-inner">
+    <div>
+      <h1>✈️ {{ app_name }}</h1>
+      <p>{{ tagline }}</p>
+    </div>
+    <div class="badge">Flight Route Finder</div>
+  </div>
+</header>
+
+<main class="page">
+  <aside class="sidebar">
+    <div class="panel">
+      <h2>Filters</h2>
+
+      <div class="rowBetween">
+        <label>Max connections</label>
+        <div class="chip"><span id="maxHopsVal">{{ defaults.max_hops }}</span></div>
+      </div>
+      <input id="max_hops" class="slider" type="range" min="1" max="6" value="{{ defaults.max_hops }}"/>
+      <div class="sliderTicks"><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span></div>
+
+      <div class="divider"></div>
+
+        <div class="filterBlock">
+        <div class="rowBetween">
+            <div>
+            <div class="filterTitle">Avoid airports</div>
+            <div class="filterHint">Search → tick to exclude</div>
+            </div>
+
+            <div class="filterActions">
+            <button class="collapseBtn" type="button" data-collapse="#avoidBody" aria-expanded="true">Hide</button>
+            <button id="clearAvoid" class="linkBtn" type="button">Clear</button>
+            </div>
+        </div>
+
+        <div id="avoidBody" class="collapsible">
+            <input id="avoidSearch" class="searchBox" placeholder="Search airport code / city / country…" />
+            <div id="avoidList" class="checkList"></div>
+        </div>
+        </div>
+
+      <div class="divider"></div>
+
+        <div class="filterBlock">
+        <div class="rowBetween">
+            <div>
+            <div class="filterTitle">Allowed airline codes</div>
+            <div class="filterHint">If none selected → allow all</div>
+            </div>
+
+            <div class="filterActions">
+            <button class="collapseBtn" type="button" data-collapse="#airlinesBody" aria-expanded="true">Hide</button>
+            <button id="clearAirlines" class="linkBtn" type="button">Clear</button>
+            </div>
+        </div>
+
+        <div id="airlinesBody" class="collapsible">
+            <input id="airlineSearch" class="searchBox" placeholder="Search airline code…" />
+            <div id="airlinesList" class="checkList"></div>
+        </div>
+        </div>
+    </div>
+  </aside>
+
+  <section class="content">
+    <div class="panel">
+      <h2>Search</h2>
+        <div class="grid3">
+        <div>
+            <label for="start">From</label>
+            <select id="start">
+                <option value="">Select start...</option>
+                {% for a in airports %}
+                    <option value="{{ a.code }}">{{ a.label }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div>
+            <label for="goal">To</label>
+            <select id="goal">
+                <option value="">Select destination...</option>
+                {% for a in airports %}
+                    <option value="{{ a.code }}">{{ a.label }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div>
+            <label for="mode">Mode</label>
+            <select id="mode">
+            <option value="Shortest" selected>Shortest</option>
+            <option value="Cheapest">Cheapest</option>
+            <option value="Fastest">Fastest</option>
+            </select>
+        </div>
+        </div>
+      <div class="actions">
+        <button id="searchBtn" class="primary">Search routes</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="rowBetween">
+        <h2 style="margin:0;">Route options</h2>
+        <button id="viewMoreBtn" class="secondary" style="display:none;">View more routes</button>
+      </div>
+      <div id="options" class="cards"></div>
+    </div>
+
+   <div class="panel">
+        <h2>Map</h2>
+        <div id="map"></div>
+        </div>
+
+        <div class="panel">
+        <h2>Details</h2>
+        <div id="details" class="details"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+  window.__AIRPORTS__ = {{ airports|tojson }};
+  window.__CARRIER_CODES__ = {{ carrier_codes|tojson }};
+  window.__DEFAULT_LIMIT__ = {{ defaults.limit|tojson }};
+</script>
+
+{% endblock %}

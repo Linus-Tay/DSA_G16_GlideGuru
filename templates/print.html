@@ -1,0 +1,58 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>{{ title }}</title>
+<style>
+  body{font-family:Inter,system-ui,Segoe UI,Roboto,Arial;padding:28px;color:#111;background:#fff}
+  h1{margin:0 0 6px}
+  .sub{color:#555;margin:0 0 18px}
+  .cards{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}
+  .card{border:1px solid #e5e7eb;border-radius:12px;padding:12px 14px;min-width:170px;background:#fff}
+  .card b{display:block;margin-bottom:6px}
+  table{border-collapse:collapse;width:100%}
+  th,td{border:1px solid #e5e7eb;padding:9px;font-size:13px;vertical-align:top}
+  th{background:#f8fafc;text-align:left}
+  @media print { .noprint{display:none;} }
+</style>
+</head>
+<body>
+  <div class="noprint" style="margin-bottom:12px;">
+    <button onclick="window.print()">Print</button>
+  </div>
+
+  <h1>{{ title }}</h1>
+  <p class="sub">{{ path }}</p>
+
+  <div class="cards">
+    <div class="card"><b>Total Distance</b>{{ "%.0f"|format(km) }} km</div>
+    <div class="card"><b>Total Time</b>{{ mins }} min</div>
+    <div class="card"><b>Total Price</b>SGD {{ "%.2f"|format(price) }}</div>
+    <div class="card"><b>Connections</b>{{ hops }}</div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Leg</th><th>From</th><th>To</th><th>Km</th><th>Min</th><th>Price</th><th>Airlines</th><th>Codes</th><th>Flights/day</th><th>Departures</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in table %}
+      <tr>
+        <td>{{ r.leg }}</td>
+        <td>{{ r["from"] }}</td>
+        <td>{{ r["to"] }}</td>
+        <td>{{ r.km }}</td>
+        <td>{{ r.min }}</td>
+        <td>{{ r.price }}</td>
+        <td>{{ r.airlines }}</td>
+        <td>{{ r.codes }}</td>
+        <td>{{ r.daily }}</td>
+        <td>{{ r.departures }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>
