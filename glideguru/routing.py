@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Callable, List, Sequence, Tuple
 import pandas as pd
 from glideguru.data import Edge, GraphData, IATA
+import heapq
 
 @dataclass(frozen=True)
 class RouteOption:
@@ -18,6 +19,10 @@ def weight_fn(mode: str) -> Callable[[Edge], float]:
     if mode == "Fastest": return lambda e: float(e.minutes)
     if mode == "Cheapest": return lambda e: e.price
     if mode == "Fewest hops": return lambda _e: 1.0
+    if mode == "Cost-effective":
+        return lambda e: (
+        0.5 * e.price + 0.3 * e.minutes + 0.15 * 60 + 0.05 * e.km
+    )
     return lambda e: e.price + 0.25 * float(e.minutes)
 
 def totals(gd: GraphData, path: Sequence[IATA]) -> Tuple[float, int, float, int]:
@@ -52,3 +57,25 @@ def legs_df(gd: GraphData, path: Sequence[IATA]) -> pd.DataFrame:
             "departures": ", ".join(e.departures) if e.departures else "—",
         })
     return pd.DataFrame(rows)
+
+def top_k_cost_effective(options: List[RouteOption], k: int) -> List[RouteOption]:
+
+    if len(options) <= k:
+        return sorted(options, key=lambda x: x.score)
+
+    heap = []
+
+    for opt in options:
+
+        item = (-opt.score, opt)
+
+        if len(heap) < k:
+            heapq.heappush(heap, item)
+
+        else:
+            if opt.score < -heap[0][0]:
+                heapq.heapreplace(heap, item)
+
+    result = [item[1] for item in heap]
+
+    return sorted(result, key=lambda x: x.score)

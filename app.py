@@ -2,14 +2,27 @@ from flask import Flask, render_template, request, jsonify
 import glideguru.config as config
 from glideguru.data import load_graph, all_carrier_codes
 from glideguru.algorithms import bfs_hops, yen_k_paths
-from glideguru.routing import totals, weight_fn, score_of
+from glideguru.routing import totals, weight_fn, score_of, top_k_cost_effective, RouteOption
+from glideguru.unionfind import UnionFind
+import time
+
+start_time = time.time()
+def build_connectivity(gd):
+    uf = UnionFind(gd.graph.keys())
+
+    for u in gd.graph:
+        for e in gd.graph[u]:
+            v = e.dest
+            uf.union(u, v)
+
+    return uf
 
 app = Flask(__name__)
 
 GD = load_graph(config.DATA_PATH)
+UF = build_connectivity(GD)
 AIRPORTS = GD.airports
 CARRIER_CODES = all_carrier_codes(GD)
-
 
 def airport_label(code: str) -> str:
     a = AIRPORTS[code]
@@ -76,8 +89,11 @@ def api_search():
     allowed_list = body.get("allowed", [])
     allowed = set(allowed_list) if allowed_list else None
 
-    if not start or not goal or start == goal:
-        return jsonify({"error": "Invalid start/goal"}), 400
+    if start not in AIRPORTS or goal not in AIRPORTS:
+        return jsonify({"error": "Invalid airport"}), 400
+    
+    if UF.find(start) != UF.find(goal):
+        return jsonify({"options": [], "has_more": False})
 
     blocked.discard(start)
     blocked.discard(goal)
@@ -110,20 +126,27 @@ def api_search():
     options = []
     for i, p in enumerate(paths, 1):
         km, mins, price, hops = totals(GD, p)
-        options.append(
-            {
-                "id": i,
-                "path": p,
-                "km": float(km),
-                "minutes": int(mins),
-                "price": float(price),
-                "hops": int(hops),
-                "score": float(score_of(GD, p, wf)),
-                "legs": legs_list(p),
-            }
-        )
+        score = score_of(GD, p, wf)
+        options.append(RouteOption(id=i, path=p, km=km, minutes=mins, price=price, hops=hops, score=score))
 
-    return jsonify({"options": options, "has_more": has_more})
+    if mode == "Cost-effective":
+        options = top_k_cost_effective(options, limit)
+
+    return jsonify({
+        "options": [
+            {
+                "id": o.id,
+                "path": o.path,
+                "km": o.km,
+                "minutes": o.minutes,
+                "price": o.price,
+                "hops": o.hops,
+                "score": o.score
+            }
+            for o in options
+        ],
+        "has_more": len(options) > limit
+})
 
 
 @app.get("/print")
@@ -136,6 +159,18 @@ def print_view():
     limit = int(request.args.get("limit", 6))
     blocked = set(request.args.get("blocked", "").split(",")) if request.args.get("blocked") else set()
     allowed = set(request.args.get("allowed", "").split(",")) if request.args.get("allowed") else None
+
+    if UF.find(start) != UF.find(goal):
+        return render_template(
+        "print.html",
+        title="No route",
+        path="No route available",
+        km=0,
+        mins=0,
+        price=0,
+        hops=0,
+        table=[]
+    )
 
     blocked.discard(start)
     blocked.discard(goal)
