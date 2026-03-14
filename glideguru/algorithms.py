@@ -29,39 +29,62 @@ def bfs_hops(gd: GraphData, start: IATA, goal: IATA, blocked: Set[IATA], allowed
         path.append(cur); cur = prev[cur]
     return list(reversed(path))
 
-def dijkstra(
-    gd: GraphData, start: IATA, goal: IATA, w: Callable[[Edge], float],
-    blocked: Set[IATA], allowed: Optional[Set[str]], max_hops: int,
+def dijkstra(   # to return list of paths and total cost)
+    gd: GraphData, 
+    start: IATA, 
+    goal: IATA, 
+    w: Callable[[Edge], float], 
+    blocked: Set[IATA], 
+    allowed: Optional[Set[str]], 
+    max_hops: int,
     blocked_edges: Optional[Set[Tuple[IATA, IATA]]] = None
 ) -> Tuple[List[IATA], float]:
-    if start in blocked or goal in blocked: return [], float("inf")
+    """
+    Baseline Dijkstra stub for Yen's Algorithm testing.
+    Returns (path_list, total_cost).
+    """
+    if start in blocked or goal in blocked: 
+        return [], float('inf')
+    
+    # Priority queue stores: (accumulated_cost, hops_taken, current_node, path_history)
+    pq = [(0.0, 0, start, [start])]
+    visited: Dict[IATA, float] = {}
     blocked_edges = blocked_edges or set()
-    dist: Dict[IATA, float] = {start: 0.0}
-    prev: Dict[IATA, Optional[IATA]] = {start: None}
-    hops: Dict[IATA, int] = {start: 0}
-    pq: List[Tuple[float, IATA]] = [(0.0, start)]
+
     while pq:
-        cost, u = heapq.heappop(pq)
-        if cost != dist.get(u, float("inf")): continue
-        if u == goal: break
-        for e in gd.graph.get(u, []):
-            v = e.dest
-            if v in blocked or (u, v) in blocked_edges: continue
-            real = gd.edge_lookup[u].get(v)
-            if not real or not _allows(real, allowed): continue
-            nh = hops[u] + 1
-            if nh > max_hops: continue
-            nc = cost + float(w(real))
-            if nc < dist.get(v, float("inf")):
-                dist[v] = nc; prev[v] = u; hops[v] = nh
-                heapq.heappush(pq, (nc, v))
-    if goal not in prev: return [], float("inf")
-    path: List[IATA] = []
-    cur: Optional[IATA] = goal
-    while cur is not None:
-        path.append(cur); cur = prev[cur]
-    path.reverse()
-    return path, dist.get(goal, float("inf"))
+        cost, hops, u, path = heapq.heappop(pq)
+        
+        # If we reached the destination, return the path and its cost
+        if u == goal:
+            return path, cost
+            
+        # If we've found a cheaper way to this node already, skip it
+        if u in visited and visited[u] <= cost:
+            continue
+        visited[u] = cost
+        
+        # Stop exploring this branch if it exceeds the max connections
+        if hops >= max_hops:
+            continue
+            
+        # Explore neighbors
+        for edge in gd.graph.get(u, []):
+            v = edge.dest
+            
+            # 1. Check if node or specific edge is blocked (Crucial for Yen's)
+            if v in blocked or (u, v) in blocked_edges:
+                continue
+                
+            # 2. Check airline constraints
+            if allowed is not None and not any(c.iata in allowed for c in edge.carriers):
+                continue
+                
+            # Calculate new cost using the dynamic weight function w()
+            new_cost = cost + float(w(edge))
+            heapq.heappush(pq, (new_cost, hops + 1, v, path + [v]))
+            
+    # Return empty if no path exists
+    return [], float('inf')
 
 def yen_k_paths(
     gd: GraphData, start: IATA, goal: IATA, w: Callable[[Edge], float], k: int,
