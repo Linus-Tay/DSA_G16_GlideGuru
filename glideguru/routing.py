@@ -21,9 +21,14 @@ def weight_fn(mode: str) -> Callable[[Edge], float]:
     if mode == "Fewest hops": return lambda _e: 1.0
     if mode == "Cost-effective":
         return lambda e: (
-        0.5 * e.price + 0.3 * e.minutes + 0.15 * 60 + 0.05 * e.km
+        (0.5 * e.price) +   # saves 50 cents per layover
+        (0.3 * e.minutes) +
+        # normalisation: dividing prevents the dsitance from overwhelming the  
+        # price in the math since distances are usually in thousands but prices in the hundreds
+        (0.2 * (e.km / 100)) + 
+        60.0 # Constant penalty per edge/hop
     )
-    return lambda e: e.price + 0.25 * float(e.minutes)
+    return lambda e: e.price + 0.25 * float(e.minutes) # Default fallback
 
 def totals(gd: GraphData, path: Sequence[IATA]) -> Tuple[float, int, float, int]:
     km = mins = 0
@@ -59,23 +64,25 @@ def legs_df(gd: GraphData, path: Sequence[IATA]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 def top_k_cost_effective(options: List[RouteOption], k: int) -> List[RouteOption]:
-
+    """
+    Ensures the final list shown to the user is the 'cream of the crop'.
+    Uses a max-heap to efficiently find the top K best (lowest) scores.
+    """
+    
+    if not options:
+        return []
+    
     if len(options) <= k:
         return sorted(options, key=lambda x: x.score)
 
     heap = []
 
+    heap = []
     for opt in options:
-
-        item = (-opt.score, opt)
-
         if len(heap) < k:
-            heapq.heappush(heap, item)
+            heapq.heappush(heap, (-opt.score, opt))
+        elif opt.score < -heap[0][0]:
+            heapq.heapreplace(heap, (-opt.score, opt))
 
-        else:
-            if opt.score < -heap[0][0]:
-                heapq.heapreplace(heap, item)
-
-    result = [item[1] for item in heap]
-
-    return sorted(result, key=lambda x: x.score)
+    # Return sorted by score (ascending)
+    return sorted([item[1] for item in heap], key=lambda x: x.score)

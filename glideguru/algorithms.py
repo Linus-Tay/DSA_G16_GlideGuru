@@ -90,36 +90,64 @@ def yen_k_paths(
     gd: GraphData, start: IATA, goal: IATA, w: Callable[[Edge], float], k: int,
     blocked: Set[IATA], allowed: Optional[Set[str]], max_hops: int
 ) -> List[List[IATA]]:
-    first, _ = dijkstra(gd, start, goal, w, blocked, allowed, max_hops=max_hops)
-    if not first: return []
+    # Get the initial shortest path and its cost
+    first_path, first_cost = dijkstra(gd, start, goal, w, blocked, allowed, max_hops=max_hops)
+    if not first_path: return []
 
-    def cost(p: List[IATA]) -> float:
-        return sum(float(w(gd.edge_lookup[p[i]][p[i + 1]])) for i in range(len(p) - 1))
-
-    A = [first]
+    A = [first_path]
+    # Store candidates as (total_cost, path_tuple) in the priority queue
     B: List[Tuple[float, Tuple[IATA, ...]]] = []
-    for _ in range(1, k):
-        last = A[-1]
-        for i in range(len(last) - 1):
-            spur = last[i]
-            root = last[: i + 1]
+
+    for ki in range(1, k):
+        last_path = A[-1]
+        
+        # We need the cost of the root_path to add to the spur_path cost
+        # Pre-calculating root_cost incrementally as we move the spur node
+        accumulated_root_cost = 0.0
+
+        for i in range(len(last_path) - 1):
+            spur_node = last_path[i]
+            root_path = last_path[:i + 1]
+
+            # 1. Update accumulated_root_cost for the current root_path
+            if i > 0:
+                prev_node = last_path[i-1]
+                edge = gd.edge_lookup[prev_node][spur_node]
+                accumulated_root_cost += float(w(edge))
+
+            # 2. Identify edges to block
             blocked_edges: Set[Tuple[IATA, IATA]] = set()
             for p in A:
-                if len(p) > i and p[: i + 1] == root:
+                if len(p) > i and p[:i + 1] == root_path:
                     blocked_edges.add((p[i], p[i + 1]))
-            temp_blocked = set(blocked); temp_blocked.update(root[:-1])
-            spur_path, _ = dijkstra(gd, spur, goal, w, temp_blocked, allowed, max_hops=max_hops, blocked_edges=blocked_edges)
-            if not spur_path: continue
-            cand = root[:-1] + spur_path
-            if (len(cand) - 1) <= max_hops:
-                heapq.heappush(B, (cost(cand), tuple(cand)))
-        if not B: break
+
+            # 3. Get the spur path AND its cost directly from Dijkstra
+            temp_blocked = set(blocked)
+            temp_blocked.update(root_path[:-1])
+            
+            spur_path, spur_cost = dijkstra(
+                gd, spur_node, goal, w, temp_blocked, allowed, 
+                max_hops=max_hops, blocked_edges=blocked_edges
+            )
+
+            if spur_path and spur_cost != float('inf'):
+                total_cand_path = root_path[:-1] + spur_path
+                total_cand_cost = accumulated_root_cost + spur_cost
+                
+                if (len(total_cand_path) - 1) <= max_hops:
+                    heapq.heappush(B, (total_cand_cost, tuple(total_cand_path)))
+
+        if not B:
+            break
+
+        # Move the best candidate from B to A, ensuring it's not a duplicate
         while B:
-            _, cand = heapq.heappop(B)
+            cost, cand = heapq.heappop(B)
             cand_list = list(cand)
             if cand_list not in A:
                 A.append(cand_list)
                 break
         else:
             break
+
     return A

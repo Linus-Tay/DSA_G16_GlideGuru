@@ -126,7 +126,7 @@ def api_search():
     options = []
     for i, p in enumerate(paths, 1):
         km, mins, price, hops = totals(GD, p)
-        score = score_of(GD, p, wf)
+        score = score_of(GD, p, wf)  # wf is result of weight_fn(mode)
         options.append(RouteOption(id=i, path=p, km=km, minutes=mins, price=price, hops=hops, score=score))
 
     if mode == "Cost-effective":
@@ -141,7 +141,8 @@ def api_search():
                 "minutes": o.minutes,
                 "price": o.price,
                 "hops": o.hops,
-                "score": o.score
+                "score": o.score,
+                "legs": legs_list(o.path)
             }
             for o in options
         ],
