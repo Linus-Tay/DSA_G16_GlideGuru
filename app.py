@@ -1,7 +1,7 @@
 from flask import Flask, render_template, request, jsonify
 import glideguru.config as config
 from glideguru.data import load_graph, all_carrier_codes
-from glideguru.algorithms import bfs_hops, yen_k_paths
+from glideguru.algorithms import bfs_hops, yen_k_paths, astar
 from glideguru.routing import totals, weight_fn, score_of, top_k_cost_effective, RouteOption
 from glideguru.unionfind import UnionFind
 import time
@@ -119,7 +119,8 @@ def api_search():
         wf = weight_fn("Fewest hops")
     else:
         wf = weight_fn(mode)
-        paths = yen_k_paths(GD, start, goal, wf, k=want, blocked=blocked, allowed=allowed, max_hops=max_hops)
+        use_astar = (mode == "Shortest")
+        paths = yen_k_paths(GD, start, goal, wf, k=want, blocked=blocked, allowed=allowed, max_hops=max_hops, use_astar=use_astar)
         has_more = len(paths) > limit
         paths = paths[:limit]
 
@@ -189,7 +190,9 @@ def print_view():
                 paths.append(x)
         paths = paths[:limit]
     else:
-        paths = yen_k_paths(GD, start, goal, weight_fn(mode), k=want, blocked=blocked, allowed=allowed, max_hops=max_hops)
+        wf = weight_fn(mode)
+        use_astar = (mode == "Shortest")
+        paths = yen_k_paths(GD, start, goal, wf, k=want, blocked=blocked, allowed=allowed, max_hops=max_hops, use_astar=use_astar)
 
     if not paths:
         return render_template("print.html", title=f"{config.APP_NAME}: No route", path="No route", km=0, mins=0, price=0, hops=0, table=[])
