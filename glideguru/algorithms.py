@@ -1,4 +1,5 @@
 import heapq
+import math 
 from collections import deque
 from typing import Callable, Dict, List, Optional, Set, Tuple
 from glideguru.data import Edge, GraphData, IATA
@@ -120,16 +121,136 @@ def dijkstra(   # to return list of paths and total cost)
     # Return empty if no path exists
     return [], float('inf')
 
+# A* algorithm using haversine heuristic (shortest distance in km)
+_EARTH_RADIUS_KM = 6_371.0
+
+def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    lat1, lon1, lat2, lon2 = (math.radians(x) for x in (lat1, lon1, lat2, lon2))
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    a = min(1.0, max(0.0, a))
+    return 2 * _EARTH_RADIUS_KM * math.asin(math.sqrt(a))
+
+def astar(
+    gd: GraphData, start: IATA, goal: IATA, blocked: Set[IATA], allowed: Optional[Set[str]],
+    max_hops: int, blocked_edges: Optional[Set[Tuple[IATA, IATA]]] = None,
+) -> Tuple[List[IATA], float]:
+
+    if start in blocked or goal in blocked:
+        return [], float('inf')
+    
+    if start == goal:
+        return [start], 0.0
+    
+    blocked_edges = blocked_edges or set()
+
+    # Build heuristic: straight-line km from any airport to the goal
+    goal_airport = gd.airports.get(goal)
+    if not goal_airport:
+        return [], float('inf')
+    
+    goal_lat = goal_airport.lat
+    goal_lon = goal_airport.lon
+
+    def h(airport_code: IATA) -> float:
+        airport = gd.airports.get(airport_code)
+        if not airport:
+            return 0.0
+        return _haversine(airport.lat, airport.lon, goal_lat, goal_lon)
+    
+    # Priority queue: (f_score, counter, g_score, hops, node)
+    # counter prevents heapq from comparing IATA strings on ties
+    counter = 0
+    open_set: List[Tuple[float, int, float, int, IATA]] = []
+    heapq.heappush(open_set, (h(start), counter, 0.0, 0, start))
+    counter += 1
+
+    # Best known g-score for each node
+    g_score: Dict[IATA, float] = {start: 0.0}
+ 
+    # Predecessor map for path reconstruction (memory-efficient)
+    prev: Dict[IATA, Optional[IATA]] = {start: None}
+ 
+    # Closed set — consistent heuristic means no re-opening needed
+    closed: Set[IATA] = set()
+
+    while open_set:
+        f, _, g, hops, current = heapq.heappop(open_set)
+ 
+        # Goal reached — first pop is guaranteed optimal with consistent heuristic
+        if current == goal:
+            return _reconstruct_path(prev, goal), g
+ 
+        if current in closed:
+            continue
+        closed.add(current)
+ 
+        if hops >= max_hops:
+            continue
+ 
+        for edge in gd.graph.get(current, []):
+            neighbor = edge.dest
+ 
+            if neighbor in blocked or neighbor in closed:
+                continue
+ 
+            if (current, neighbor) in blocked_edges:
+                continue
+ 
+            if allowed is not None:
+                if not any(c.iata in allowed for c in edge.carriers):
+                    continue
+ 
+            tentative_g = g + edge.km
+ 
+            if tentative_g < g_score.get(neighbor, float('inf')):
+                g_score[neighbor] = tentative_g
+                prev[neighbor] = current
+ 
+                f_score = tentative_g + h(neighbor)
+                heapq.heappush(open_set, (f_score, counter, tentative_g, hops + 1, neighbor))
+                counter += 1
+ 
+    return [], float('inf')
+
+def _reconstruct_path(prev: Dict[IATA, Optional[IATA]], goal: IATA) -> List[IATA]:
+    """Walk backwards through predecessor map to rebuild the full path."""
+    path: List[IATA] = []
+    current: Optional[IATA] = goal
+    while current is not None:
+        path.append(current)
+        current = prev[current]
+    path.reverse()
+    return path
+
+
+
+
 def yen_k_paths(
     gd: GraphData, start: IATA, goal: IATA, w: Callable[[Edge], float], k: int,
-    blocked: Set[IATA], allowed: Optional[Set[str]], max_hops: int
+    blocked: Set[IATA], allowed: Optional[Set[str]], max_hops: int, use_astar: bool = False
 ) -> List[List[IATA]]:
-    # Get the initial shortest path and its cost
-    first_path, first_cost = dijkstra(gd, start, goal, w, blocked, allowed, max_hops=max_hops)
-    if not first_path: return []
 
+    # if use_astar=True when search algorithm uses A*, else false dijkstra is used
+
+
+    # Choose which shortest-path function to use internally
+    def _shortest_path(
+        gd: GraphData, s: IATA, g: IATA,
+        blk: Set[IATA], alw: Optional[Set[str]],
+        mh: int, be: Optional[Set[Tuple[IATA, IATA]]] = None
+    ) -> Tuple[List[IATA], float]:
+        if use_astar:
+            return astar(gd, s, g, blk, alw, mh, be)
+        else:
+            return dijkstra(gd, s, g, w, blk, alw, mh, be)
+    
+    first_path, first_cost = _shortest_path(gd, start, goal, blocked, allowed, max_hops)
+    if not first_path:
+        return []
+    
     A = [first_path]
-    # Store candidates as (total_cost, path_tuple) in the priority queue
     B: List[Tuple[float, Tuple[IATA, ...]]] = []
 
     for ki in range(1, k):
@@ -147,7 +268,10 @@ def yen_k_paths(
             if i > 0:
                 prev_node = last_path[i-1]
                 edge = gd.edge_lookup[prev_node][spur_node]
-                accumulated_root_cost += float(w(edge))
+                if use_astar:
+                    accumulated_root_cost += edge.km
+                else:
+                    accumulated_root_cost += float(w(edge))
 
             # 2. Identify edges to block
             blocked_edges: Set[Tuple[IATA, IATA]] = set()
@@ -159,11 +283,11 @@ def yen_k_paths(
             temp_blocked = set(blocked)
             temp_blocked.update(root_path[:-1])
             
-            spur_path, spur_cost = dijkstra(
-                gd, spur_node, goal, w, temp_blocked, allowed, 
-                max_hops=max_hops, blocked_edges=blocked_edges
+            spur_path, spur_cost = _shortest_path(
+                gd, spur_node, goal, temp_blocked, allowed,
+                max_hops, blocked_edges
             )
-
+            
             if spur_path and spur_cost != float('inf'):
                 total_cand_path = root_path[:-1] + spur_path
                 total_cand_cost = accumulated_root_cost + spur_cost

@@ -1,7 +1,7 @@
 from flask import Flask, render_template, request, jsonify
 import glideguru.config as config
 from glideguru.data import load_graph, all_carrier_codes
-from glideguru.algorithms import bfs_hops, yen_k_paths
+from glideguru.algorithms import bfs_hops, yen_k_paths, astar
 from glideguru.routing import totals, weight_fn, score_of, top_k_cost_effective, RouteOption
 from glideguru.unionfind import UnionFind
 import time
@@ -154,6 +154,29 @@ def api_search():
 
     has_more = len(all_paths) > limit
     paths = all_paths[:limit]
+    if mode == "Fewest hops":
+        paths: list[list[str]] = []
+        p = bfs_hops(GD, start, goal, blocked, allowed, max_hops=max_hops)
+        if p:
+            paths.append(p)
+
+        alt = yen_k_paths(
+            GD, start, goal, weight_fn("Cost-effective"),
+            k=want, blocked=blocked, allowed=allowed, max_hops=max_hops
+        )
+        for x in alt:
+            if x not in paths:
+                paths.append(x)
+
+        has_more = len(paths) > limit
+        paths = paths[:limit]
+        wf = weight_fn("Fewest hops")
+    else:
+        wf = weight_fn(mode)
+        use_astar = (mode == "Shortest")
+        paths = yen_k_paths(GD, start, goal, wf, k=want, blocked=blocked, allowed=allowed, max_hops=max_hops, use_astar=use_astar)
+        has_more = len(paths) > limit
+        paths = paths[:limit]
 
     options = []
     for i, p in enumerate(paths, 1):
@@ -211,7 +234,21 @@ def print_view():
     blocked.discard(goal)
 
     want = max(1, min(limit, 60))
-    paths = search_paths(start, goal, mode, blocked, allowed, max_hops, want)
+
+    if mode == "Fewest hops":
+        paths: list[list[str]] = []
+        p = bfs_hops(GD, start, goal, blocked, allowed, max_hops=max_hops)
+        if p:
+            paths.append(p)
+        alt = yen_k_paths(GD, start, goal, weight_fn("Cost-effective"), k=want, blocked=blocked, allowed=allowed, max_hops=max_hops)
+        for x in alt:
+            if x not in paths:
+                paths.append(x)
+        paths = paths[:limit]
+    else:
+        wf = weight_fn(mode)
+        use_astar = (mode == "Shortest")
+        paths = yen_k_paths(GD, start, goal, wf, k=want, blocked=blocked, allowed=allowed, max_hops=max_hops, use_astar=use_astar)
 
     if not paths:
         return render_template(
