@@ -1,5 +1,5 @@
 let map = null;
-let routeLine = null;
+let routeLines = [];
 let markers = [];
 
 let tsStart = null, tsGoal = null, tsMode = null;
@@ -59,11 +59,11 @@ function initMap() {
 
 function clearMap(resetView = false) {
   if (!map) return;
-  if (routeLine) {
-    map.removeLayer(routeLine);
-    routeLine = null;
-  }
-  markers.forEach(m => map.removeLayer(m));
+
+  routeLines.forEach(line => map.removeLayer(line));
+  routeLines = [];
+
+  markers.forEach(marker => map.removeLayer(marker));
   markers = [];
 
   if (resetView) {
@@ -71,19 +71,54 @@ function clearMap(resetView = false) {
   }
 }
 
-function drawRoute(path) {
+function airportSymbol(role) {
+  if (role === 'start') return '✈';
+  if (role === 'end') return '⚑';
+  return '●';
+}
+
+function airportMarkerClass(role) {
+  if (role === 'start') return 'airport-marker airport-marker-start';
+  if (role === 'end') return 'airport-marker airport-marker-end';
+  return 'airport-marker airport-marker-layover';
+}
+
+function makeAirportIcon(role) {
+  return L.divIcon({
+    className: 'airport-marker-wrapper',
+    html: `
+      <div class="${airportMarkerClass(role)}">
+        <span>${airportSymbol(role)}</span>
+      </div>
+    `,
+    iconSize: [28, 28],
+    iconAnchor: [14, 14],
+    popupAnchor: [0, -14],
+    tooltipAnchor: [0, -16],
+  });
+}
+
+function drawRoute(option) {
   if (!map) return;
   clearMap(false);
 
   const airports = window.__AIRPORTS__ || [];
   const byCode = {};
-  airports.forEach(a => (byCode[a.code] = a));
+  airports.forEach(a => {
+    byCode[a.code] = a;
+  });
+
+  const path = option.path || [];
+  const legs = option.legs || [];
 
   const points = path
     .filter(code => byCode[code])
     .map(code => ({
       code,
-      name: byCode[code].label,
+      label: byCode[code].label,
+      name: byCode[code].name || byCode[code].label,
+      city: byCode[code].city || '',
+      country: byCode[code].country || '',
       lat: byCode[code].lat,
       lon: byCode[code].lon,
     }));
@@ -93,25 +128,135 @@ function drawRoute(path) {
     return;
   }
 
-  const coords = points.map(p => [p.lat, p.lon]);
-  routeLine = L.polyline(coords, { color: '#2563eb', weight: 6, opacity: 0.95 }).addTo(map);
-  map.fitBounds(routeLine.getBounds(), { padding: [30, 30] });
+  const bounds = L.latLngBounds(points.map(p => [p.lat, p.lon]));
+  map.fitBounds(bounds, { padding: [30, 30] });
+
+  legs.forEach((leg) => {
+    const fromAirport = byCode[leg.from_code];
+    const toAirport = byCode[leg.to_code];
+    if (!fromAirport || !toAirport) return;
+
+    const coords = [
+      [fromAirport.lat, fromAirport.lon],
+      [toAirport.lat, toAirport.lon]
+    ];
+
+    const airlineCodes = (leg.airlines || [])
+      .map(a => a.code)
+      .filter(Boolean)
+      .join(', ') || '—';
+
+    const airlineNames = (leg.airlines || [])
+      .map(a => a.name)
+      .filter(Boolean)
+      .join(', ') || 'Unknown';
+
+    const hoverText = `
+  <div class="mapTooltipTitle">${leg.from_code} → ${leg.to_code}</div>
+  <div class="mapTooltipSub">${fmtDuration(leg.minutes)}</div>
+`;
+
+    const popupText = `
+  <div class="mapPopup">
+    <div class="mapPopupTitle">${leg.from_code} → ${leg.to_code}</div>
+    <div class="mapPopupSub">${airlineCodes} • ${fmtDuration(leg.minutes)}</div>
+
+    <div class="mapPopupGrid">
+      <div class="mapPopupItem">
+        <div class="mapPopupLabel">Airline</div>
+        <div class="mapPopupValue">${airlineNames}</div>
+      </div>
+      <div class="mapPopupItem">
+        <div class="mapPopupLabel">Price</div>
+        <div class="mapPopupValue">SGD ${Number(leg.price || 0).toFixed(2)}</div>
+      </div>
+      <div class="mapPopupItem">
+        <div class="mapPopupLabel">Distance</div>
+        <div class="mapPopupValue">${Math.round(Number(leg.km || 0))} km</div>
+      </div>
+      <div class="mapPopupItem">
+        <div class="mapPopupLabel">Departures</div>
+        <div class="mapPopupValue">${(leg.departures && leg.departures.length) ? leg.departures.slice(0, 3).join(', ') : '—'}</div>
+      </div>
+    </div>
+  </div>
+`;
+
+    const line = L.polyline(coords, {
+      color: '#2563eb',
+      weight: 7,
+      opacity: 0.95,
+      interactive: true
+    }).addTo(map);
+
+    line.bindTooltip(hoverText, {
+      sticky: true,
+      direction: 'top',
+      opacity: 0.95
+    });
+
+    line.bindPopup(popupText);
+
+    line.on('mouseover', function () {
+      this.openTooltip();
+    });
+
+    line.on('mouseout', function () {
+      this.closeTooltip();
+    });
+
+    routeLines.push(line);
+  });
 
   points.forEach((p, idx) => {
     const isStart = idx === 0;
     const isEnd = idx === points.length - 1;
-    const radius = isStart || isEnd ? 7 : 5;
-    const color = isStart ? '#16a34a' : isEnd ? '#ef4444' : '#1d4ed8';
 
-    const marker = L.circleMarker([p.lat, p.lon], {
-      radius,
-      color,
-      fillColor: color,
-      fillOpacity: 1,
+    const roleKey = isStart ? 'start' : isEnd ? 'end' : 'layover';
+    const roleLabel = isStart ? 'Start airport' : isEnd ? 'Destination airport' : `Layover ${idx}`;
+
+    const marker = L.marker([p.lat, p.lon], {
+      icon: makeAirportIcon(roleKey),
+      interactive: true
     }).addTo(map);
 
-    const title = isStart ? 'Start' : isEnd ? 'Destination' : `Layover ${idx}`;
-    marker.bindPopup(`<b>${title}</b><br>${p.code}<br>${p.name}`);
+    const airportTitle = p.name && p.name !== p.label ? p.name : p.label;
+    const airportSub = [p.city, p.country].filter(Boolean).join(', ');
+
+    marker.bindTooltip(
+      `<div><b>${p.code}</b>${airportSub ? ` — ${airportSub}` : ''}</div>`,
+      {
+        sticky: true,
+        direction: 'top',
+        opacity: 0.95
+      }
+    );
+
+    marker.bindPopup(`
+  <div class="mapPopup mapPopupCompact">
+    <div class="mapPopupTitle">${airportTitle}</div>
+
+    <div class="mapPopupList">
+      <div class="mapPopupRow">
+        <span class="mapPopupRowLabel">Code</span>
+        <span class="mapPopupRowValue">${p.code}</span>
+      </div>
+      <div class="mapPopupRow">
+        <span class="mapPopupRowLabel">Role</span>
+        <span class="mapPopupRowValue">${roleLabel}</span>
+      </div>
+    </div>
+  </div>
+`);
+
+    marker.on('mouseover', function () {
+      this.openTooltip();
+    });
+
+    marker.on('mouseout', function () {
+      this.closeTooltip();
+    });
+
     markers.push(marker);
   });
 
@@ -174,7 +319,7 @@ function selectOption(option) {
   const card = document.querySelector(`.card[data-id="${option.id}"]`);
   if (card) card.classList.add('selected');
 
-  drawRoute(option.path);
+  drawRoute(option);
   renderDetails(option);
 }
 

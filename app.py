@@ -104,9 +104,17 @@ def search_paths(start: str, goal: str, mode: str, blocked: set[str], allowed, m
 @app.get("/")
 def index():
     airports = [
-        {"code": c, "label": airport_label(c), "lat": AIRPORTS[c].lat, "lon": AIRPORTS[c].lon}
-        for c in sorted(AIRPORTS)
-    ]
+    {
+        "code": c,
+        "label": airport_label(c),
+        "name": AIRPORTS[c].name,
+        "city": AIRPORTS[c].city,
+        "country": AIRPORTS[c].country,
+        "lat": AIRPORTS[c].lat,
+        "lon": AIRPORTS[c].lon,
+    }
+    for c in sorted(AIRPORTS)
+]
     return render_template(
         "index.html",
         app_name=config.APP_NAME,
