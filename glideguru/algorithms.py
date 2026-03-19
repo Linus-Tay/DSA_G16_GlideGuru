@@ -6,28 +6,62 @@ from glideguru.data import Edge, GraphData, IATA
 def _allows(edge: Edge, allowed: Optional[Set[str]]) -> bool:
     return (not allowed) or any(c.iata in allowed for c in edge.carriers)
 
-def bfs_hops(gd: GraphData, start: IATA, goal: IATA, blocked: Set[IATA], allowed: Optional[Set[str]], max_hops: int) -> List[IATA]:
-    if start in blocked or goal in blocked: return []
+def bfs_hops(
+    gd: GraphData,
+    start: IATA,
+    goal: IATA,
+    blocked: Set[IATA],
+    allowed: Optional[Set[str]],
+    max_hops: int,
+) -> List[IATA]:
+    """
+    Finds the path with the fewest number of hops using Breadth-First Search.
+
+    Because BFS explores the graph level by level, the first time the goal is
+    reached we are guaranteed to have found a minimum-hop path, subject to the
+    current airport/carrier constraints.
+    """
+    if start in blocked or goal in blocked:
+        return []
+
     q = deque([start])
     prev: Dict[IATA, Optional[IATA]] = {start: None}
     depth: Dict[IATA, int] = {start: 0}
+
     while q:
         u = q.popleft()
-        if u == goal: break
+        if u == goal:
+            break
+
         for e in gd.graph.get(u, []):
             v = e.dest
-            if v in blocked or v in prev: continue
-            real = gd.edge_lookup[u].get(v)
-            if not real or not _allows(real, allowed): continue
-            d = depth[u] + 1
-            if d > max_hops: continue
-            prev[v] = u; depth[v] = d; q.append(v)
-    if goal not in prev: return []
+
+            if v in blocked or v in prev:
+                continue
+
+            real_edge = gd.edge_lookup[u].get(v)
+            if not real_edge or not _allows(real_edge, allowed):
+                continue
+
+            next_depth = depth[u] + 1
+            if next_depth > max_hops:
+                continue
+
+            prev[v] = u
+            depth[v] = next_depth
+            q.append(v)
+
+    if goal not in prev:
+        return []
+
     path: List[IATA] = []
     cur: Optional[IATA] = goal
     while cur is not None:
-        path.append(cur); cur = prev[cur]
+        path.append(cur)
+        cur = prev[cur]
+
     return list(reversed(path))
+
 
 def dijkstra(   # to return list of paths and total cost)
     gd: GraphData, 

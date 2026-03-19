@@ -7,15 +7,15 @@ from glideguru.unionfind import UnionFind
 import time
 
 start_time = time.time()
+
+
 def build_connectivity(gd):
     uf = UnionFind(gd.graph.keys())
-
     for u in gd.graph:
         for e in gd.graph[u]:
-            v = e.dest
-            uf.union(u, v)
-
+            uf.union(u, e.dest)
     return uf
+
 
 app = Flask(__name__)
 
@@ -23,6 +23,7 @@ GD = load_graph(config.DATA_PATH)
 UF = build_connectivity(GD)
 AIRPORTS = GD.airports
 CARRIER_CODES = all_carrier_codes(GD)
+
 
 def airport_label(code: str) -> str:
     a = AIRPORTS[code]
@@ -59,6 +60,47 @@ def legs_list(path: list[str]) -> list[dict]:
     return legs
 
 
+def search_paths(start: str, goal: str, mode: str, blocked: set[str], allowed, max_hops: int, want: int):
+    """
+    Centralized search wrapper so /api/search and /print use the same logic.
+
+    Fewest hops:
+    - primary route comes from BFS
+    - extra options come from Yen with unit edge weights so alternatives are also
+      hop-oriented rather than cost-oriented
+    """
+    if mode == "Fewest hops":
+        paths: list[list[str]] = []
+        primary = bfs_hops(GD, start, goal, blocked, allowed, max_hops=max_hops)
+        if primary:
+            paths.append(primary)
+
+        for candidate in yen_k_paths(
+            GD,
+            start,
+            goal,
+            weight_fn("Fewest hops"),
+            k=want,
+            blocked=blocked,
+            allowed=allowed,
+            max_hops=max_hops,
+        ):
+            if candidate not in paths:
+                paths.append(candidate)
+        return paths
+
+    return yen_k_paths(
+        GD,
+        start,
+        goal,
+        weight_fn(mode),
+        k=want,
+        blocked=blocked,
+        allowed=allowed,
+        max_hops=max_hops,
+    )
+
+
 @app.get("/")
 def index():
     airports = [
@@ -91,63 +133,47 @@ def api_search():
 
     if start not in AIRPORTS or goal not in AIRPORTS:
         return jsonify({"error": "Invalid airport"}), 400
-    
+
     if UF.find(start) != UF.find(goal):
         return jsonify({"options": [], "has_more": False})
 
     blocked.discard(start)
     blocked.discard(goal)
 
-    want = max(1, min(limit + 1, 60))  # safety cap
+    want = max(1, min(limit + 1, 60))
+    wf = weight_fn(mode)
+    all_paths = search_paths(start, goal, mode, blocked, allowed, max_hops, want)
 
-    if mode == "Fewest hops":
-        paths: list[list[str]] = []
-        p = bfs_hops(GD, start, goal, blocked, allowed, max_hops=max_hops)
-        if p:
-            paths.append(p)
-
-        alt = yen_k_paths(
-            GD, start, goal, weight_fn("Cost-effective"),
-            k=want, blocked=blocked, allowed=allowed, max_hops=max_hops
-        )
-        for x in alt:
-            if x not in paths:
-                paths.append(x)
-
-        has_more = len(paths) > limit
-        paths = paths[:limit]
-        wf = weight_fn("Fewest hops")
-    else:
-        wf = weight_fn(mode)
-        paths = yen_k_paths(GD, start, goal, wf, k=want, blocked=blocked, allowed=allowed, max_hops=max_hops)
-        has_more = len(paths) > limit
-        paths = paths[:limit]
+    has_more = len(all_paths) > limit
+    paths = all_paths[:limit]
 
     options = []
     for i, p in enumerate(paths, 1):
         km, mins, price, hops = totals(GD, p)
-        score = score_of(GD, p, wf)  # wf is result of weight_fn(mode)
+        score = score_of(GD, p, wf)
         options.append(RouteOption(id=i, path=p, km=km, minutes=mins, price=price, hops=hops, score=score))
 
     if mode == "Cost-effective":
         options = top_k_cost_effective(options, limit)
 
-    return jsonify({
-        "options": [
-            {
-                "id": o.id,
-                "path": o.path,
-                "km": o.km,
-                "minutes": o.minutes,
-                "price": o.price,
-                "hops": o.hops,
-                "score": o.score,
-                "legs": legs_list(o.path)
-            }
-            for o in options
-        ],
-        "has_more": len(options) > limit
-})
+    return jsonify(
+        {
+            "options": [
+                {
+                    "id": o.id,
+                    "path": o.path,
+                    "km": o.km,
+                    "minutes": o.minutes,
+                    "price": o.price,
+                    "hops": o.hops,
+                    "score": o.score,
+                    "legs": legs_list(o.path),
+                }
+                for o in options
+            ],
+            "has_more": has_more,
+        }
+    )
 
 
 @app.get("/print")
@@ -163,62 +189,60 @@ def print_view():
 
     if UF.find(start) != UF.find(goal):
         return render_template(
-        "print.html",
-        title="No route",
-        path="No route available",
-        km=0,
-        mins=0,
-        price=0,
-        hops=0,
-        table=[]
-    )
+            "print.html",
+            title="No route",
+            path="No route available",
+            km=0,
+            mins=0,
+            price=0,
+            hops=0,
+            table=[],
+        )
 
     blocked.discard(start)
     blocked.discard(goal)
 
     want = max(1, min(limit, 60))
-
-    if mode == "Fewest hops":
-        paths: list[list[str]] = []
-        p = bfs_hops(GD, start, goal, blocked, allowed, max_hops=max_hops)
-        if p:
-            paths.append(p)
-        alt = yen_k_paths(GD, start, goal, weight_fn("Cost-effective"), k=want, blocked=blocked, allowed=allowed, max_hops=max_hops)
-        for x in alt:
-            if x not in paths:
-                paths.append(x)
-        paths = paths[:limit]
-    else:
-        paths = yen_k_paths(GD, start, goal, weight_fn(mode), k=want, blocked=blocked, allowed=allowed, max_hops=max_hops)
+    paths = search_paths(start, goal, mode, blocked, allowed, max_hops, want)
 
     if not paths:
-        return render_template("print.html", title=f"{config.APP_NAME}: No route", path="No route", km=0, mins=0, price=0, hops=0, table=[])
+        return render_template(
+            "print.html",
+            title=f"{config.APP_NAME}: No route",
+            path="No route",
+            km=0,
+            mins=0,
+            price=0,
+            hops=0,
+            table=[],
+        )
 
     idx = max(1, min(int(option_id), len(paths))) - 1
     path = paths[idx]
     km, mins, price, hops = totals(GD, path)
 
-    # print uses leg list for the table (simple)
     table = []
     for leg in legs_list(path):
         airline_names = ", ".join([a["name"] for a in leg["airlines"] if a.get("name")]) or "Unknown"
         airline_codes = ", ".join([a["code"] for a in leg["airlines"] if a.get("code")]) or "—"
-        table.append({
-            "leg": leg["leg"],
-            "from": f'{leg["from_name"]} ({leg["from_code"]})',
-            "to": f'{leg["to_name"]} ({leg["to_code"]})',
-            "km": leg["km"],
-            "min": leg["minutes"],
-            "price": leg["price"],
-            "airlines": airline_names,
-            "codes": airline_codes,
-            "daily": leg["daily"],
-            "departures": ", ".join(leg["departures"]) if leg["departures"] else "—",
-        })
+        table.append(
+            {
+                "leg": leg["leg"],
+                "from": f'{leg["from_name"]} ({leg["from_code"]})',
+                "to": f'{leg["to_name"]} ({leg["to_code"]})',
+                "km": leg["km"],
+                "min": leg["minutes"],
+                "price": leg["price"],
+                "airlines": airline_names,
+                "codes": airline_codes,
+                "daily": leg["daily"],
+                "departures": ", ".join(leg["departures"]) if leg["departures"] else "—",
+            }
+        )
 
     return render_template(
         "print.html",
-        title=f"{config.APP_NAME}: {start} → {goal} (Option {idx+1})",
+        title=f"{config.APP_NAME}: {start} → {goal} (Option {idx + 1})",
         path=" → ".join(path),
         km=km,
         mins=mins,

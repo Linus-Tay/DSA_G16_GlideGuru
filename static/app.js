@@ -22,23 +22,19 @@ function initTomSelect() {
     persist: false,
     maxOptions: 9999,
     closeAfterSelect: true,
-
     allowEmptyOption: true,
-    
     searchField: ['text', 'value'],
     sortField: [{ field: '$score', direction: 'desc' }],
-
   };
 
   tsStart = makeTomSelect('#start', common);
-  tsGoal  = makeTomSelect('#goal', common);
+  tsGoal = makeTomSelect('#goal', common);
 
-  // Optional: make mode also tomselect for consistent styling
-  tsMode  = makeTomSelect('#mode', {
+  tsMode = makeTomSelect('#mode', {
     create: false,
     persist: false,
     closeAfterSelect: true,
-    searchField: [], // disables search typing for mode
+    searchField: [],
   });
 }
 
@@ -61,43 +57,65 @@ function initMap() {
   }).addTo(map);
 }
 
-function clearMap() {
+function clearMap(resetView = false) {
   if (!map) return;
-  if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+  if (routeLine) {
+    map.removeLayer(routeLine);
+    routeLine = null;
+  }
   markers.forEach(m => map.removeLayer(m));
   markers = [];
+
+  if (resetView) {
+    map.setView([1.35, 103.82], 3);
+  }
 }
 
 function drawRoute(path) {
   if (!map) return;
-  clearMap();
+  clearMap(false);
 
   const airports = window.__AIRPORTS__ || [];
   const byCode = {};
   airports.forEach(a => (byCode[a.code] = a));
 
-  const coords = path
+  const points = path
     .filter(code => byCode[code])
-    .map(code => [byCode[code].lat, byCode[code].lon]);
+    .map(code => ({
+      code,
+      name: byCode[code].label,
+      lat: byCode[code].lat,
+      lon: byCode[code].lon,
+    }));
 
-  if (coords.length < 2) return;
+  if (points.length < 2) {
+    clearMap(true);
+    return;
+  }
 
+  const coords = points.map(p => [p.lat, p.lon]);
   routeLine = L.polyline(coords, { color: '#2563eb', weight: 6, opacity: 0.95 }).addTo(map);
   map.fitBounds(routeLine.getBounds(), { padding: [30, 30] });
 
-  const startM = L.circleMarker(coords[0], { radius: 7, color: '#16a34a', fillColor: '#16a34a', fillOpacity: 1 }).addTo(map);
-  startM.bindTooltip(`Start: ${path[0]}`);
-  markers.push(startM);
+  points.forEach((p, idx) => {
+    const isStart = idx === 0;
+    const isEnd = idx === points.length - 1;
+    const radius = isStart || isEnd ? 7 : 5;
+    const color = isStart ? '#16a34a' : isEnd ? '#ef4444' : '#1d4ed8';
 
-  const endM = L.circleMarker(coords[coords.length - 1], { radius: 7, color: '#ef4444', fillColor: '#ef4444', fillOpacity: 1 }).addTo(map);
-  endM.bindTooltip(`End: ${path[path.length - 1]}`);
-  markers.push(endM);
+    const marker = L.circleMarker([p.lat, p.lon], {
+      radius,
+      color,
+      fillColor: color,
+      fillOpacity: 1,
+    }).addTo(map);
 
-  for (let i = 1; i < coords.length - 1; i++) {
-    const mid = L.circleMarker(coords[i], { radius: 5, color: '#1d4ed8', fillColor: '#1d4ed8', fillOpacity: 0.85 }).addTo(map);
-    mid.bindTooltip(path[i]);
-    markers.push(mid);
-  }
+    const title = isStart ? 'Start' : isEnd ? 'Destination' : `Layover ${idx}`;
+    marker.bindPopup(`<b>${title}</b><br>${p.code}<br>${p.name}`);
+    markers.push(marker);
+  });
+
+  setTimeout(() => map.invalidateSize(), 0);
 }
 
 function setViewMoreVisible(show) {
@@ -106,10 +124,27 @@ function setViewMoreVisible(show) {
   btn.style.display = show ? 'inline-flex' : 'none';
 }
 
+function renderEmptyState(message = 'No routes found for the current filters.') {
+  const wrap = $('#options');
+  const details = $('#details');
+  if (wrap) {
+    wrap.innerHTML = `<div class="emptyState">${message}</div>`;
+  }
+  if (details) {
+    details.innerHTML = `<p class="detailsSub">${message}</p>`;
+  }
+  clearMap(true);
+}
+
 function renderOptions(options) {
   const wrap = $('#options');
   if (!wrap) return;
   wrap.innerHTML = '';
+
+  if (!options || options.length === 0) {
+    renderEmptyState();
+    return;
+  }
 
   options.forEach((o, idx) => {
     const div = document.createElement('div');
@@ -131,7 +166,7 @@ function renderOptions(options) {
     wrap.appendChild(div);
   });
 
-  if (options.length) selectOption(options[0]);
+  selectOption(options[0]);
 }
 
 function selectOption(option) {
@@ -163,9 +198,9 @@ function addMinutesToHHMM(hhmm, addMin) {
 }
 
 function airlinesSummary(airlines) {
-  if (!airlines || airlines.length === 0) return { names: "Unknown", codes: "—" };
-  const names = airlines.map(a => a.name).filter(Boolean).join(", ") || "Unknown";
-  const codes = airlines.map(a => a.code).filter(Boolean).join(", ") || "—";
+  if (!airlines || airlines.length === 0) return { names: 'Unknown', codes: '—' };
+  const names = airlines.map(a => a.name).filter(Boolean).join(', ') || 'Unknown';
+  const codes = airlines.map(a => a.code).filter(Boolean).join(', ') || '—';
   return { names, codes };
 }
 
@@ -191,8 +226,8 @@ function renderDetails(option) {
 
   const legsHtml = (option.legs || []).map((leg) => {
     const a = airlinesSummary(leg.airlines);
-    const depart = (leg.departures && leg.departures.length) ? leg.departures[0] : "—";
-    const arrive = depart !== "—" ? (addMinutesToHHMM(depart, leg.minutes) || "—") : "—";
+    const depart = (leg.departures && leg.departures.length) ? leg.departures[0] : '—';
+    const arrive = depart !== '—' ? (addMinutesToHHMM(depart, leg.minutes) || '—') : '—';
 
     return `
       <div class="legRow">
@@ -224,7 +259,7 @@ function renderDetails(option) {
 
         <div class="legSubLine">
           <div><b>Airlines:</b> ${a.names}</div>
-          <div><b>Departures:</b> ${(leg.departures && leg.departures.length) ? leg.departures.slice(0, 6).join(", ") : "—"}</div>
+          <div><b>Departures:</b> ${(leg.departures && leg.departures.length) ? leg.departures.slice(0, 6).join(', ') : '—'}</div>
         </div>
 
         <div class="legBadges">
@@ -234,7 +269,7 @@ function renderDetails(option) {
         </div>
       </div>
     `;
-  }).join("");
+  }).join('');
 
   d.innerHTML = `
     <p class="detailsTitle">Selected route</p>
@@ -257,12 +292,9 @@ function renderDetails(option) {
 
     <p class="detailsTitle">Leg details</p>
     <p class="detailsSub">Each leg is one clean row</p>
-
     ${legsHtml}
   `;
 }
-
-/* ---------- Sidebar checkbox lists ---------- */
 
 function buildList(containerId, items, getKey, getMain, getSub, selectedSet) {
   const container = $(containerId);
@@ -351,8 +383,6 @@ function initFilterLists() {
   renderAirlines();
 }
 
-/* ---------- Search ---------- */
-
 async function search(resetLimit = false) {
   if (resetLimit) currentLimit = window.__DEFAULT_LIMIT__ || 6;
 
@@ -364,14 +394,16 @@ async function search(resetLimit = false) {
   const blocked = Array.from(avoidSelected);
   const allowed = Array.from(airlineSelected);
 
+  if (!start || !goal) {
+    alert('Please select both a start and destination airport.');
+    return;
+  }
+
   const res = await fetch('/api/search', {
     method: 'POST',
-    headers: { 'Content-Type':'application/json' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      start, goal, mode, max_hops,
-      limit: currentLimit,
-      blocked,
-      allowed,
+      start, goal, mode, max_hops, limit: currentLimit, blocked, allowed,
     })
   });
 
@@ -397,7 +429,6 @@ function initCollapsibles() {
       btn.textContent = open ? 'Hide' : 'Show';
     };
 
-    // default open
     setOpen(true);
 
     btn.addEventListener('click', () => {
