@@ -431,6 +431,8 @@ function renderDetails(option) {
 
     <div style="display:flex; gap:10px; flex-wrap:wrap;">
       <a class="primary" href="/print?${params}" target="_blank" style="text-decoration:none;">Print itinerary</a>
+      <a class="primary" href="/export/csv?${params}" style="text-decoration:none;">Download CSV</a>
+      <a class="primary" href="/export/json?${params}" style="text-decoration:none;">Download JSON</a>
     </div>
 
     <div class="divider"></div>
