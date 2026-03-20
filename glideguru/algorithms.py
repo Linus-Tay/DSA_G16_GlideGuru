@@ -214,6 +214,121 @@ def astar(
  
     return [], float('inf')
 
+
+def bidirectional_dijkstra(
+    gd: GraphData,
+    start: IATA,
+    goal: IATA,
+    w: Callable[[Edge], float],
+    blocked: Set[IATA],
+    allowed: Optional[Set[str]],
+    max_hops: int,
+) -> Tuple[List[IATA], float]:
+    """
+    Finds a lowest-cost path between two airports by running Dijkstra
+    simultaneously from the start and goal until the two searches meet.
+
+    This is appropriate for non-negative edge weights such as distance,
+    duration, and price.
+    """
+    if start in blocked or goal in blocked:
+        return [], float('inf')
+
+    if start == goal:
+        return [start], 0.0
+
+    # Build reverse adjacency on demand so the backward search can traverse
+    # incoming flights using the same edge weights.
+    reverse_graph: Dict[IATA, List[Tuple[IATA, Edge]]] = {code: [] for code in gd.graph}
+    for src, edges in gd.graph.items():
+        for edge in edges:
+            reverse_graph.setdefault(edge.dest, []).append((src, edge))
+
+    dist_f: Dict[IATA, float] = {start: 0.0}
+    dist_b: Dict[IATA, float] = {goal: 0.0}
+    hops_f: Dict[IATA, int] = {start: 0}
+    hops_b: Dict[IATA, int] = {goal: 0}
+    prev_f: Dict[IATA, Optional[IATA]] = {start: None}
+    prev_b: Dict[IATA, Optional[IATA]] = {goal: None}
+
+    pq_f: List[Tuple[float, int, IATA]] = [(0.0, 0, start)]
+    pq_b: List[Tuple[float, int, IATA]] = [(0.0, 0, goal)]
+
+    best_cost = float('inf')
+    meet: Optional[IATA] = None
+
+    while pq_f and pq_b:
+        if pq_f[0][0] + pq_b[0][0] >= best_cost:
+            break
+
+        if pq_f[0][0] <= pq_b[0][0]:
+            cost_u, hop_u, u = heapq.heappop(pq_f)
+            if cost_u > dist_f.get(u, float('inf')) or hop_u > hops_f.get(u, max_hops + 1):
+                continue
+            if hop_u >= max_hops:
+                continue
+
+            for edge in gd.graph.get(u, []):
+                v = edge.dest
+                if v in blocked or not _allows(edge, allowed):
+                    continue
+                new_hops = hop_u + 1
+                if new_hops > max_hops:
+                    continue
+                new_cost = cost_u + float(w(edge))
+                old_cost = dist_f.get(v, float('inf'))
+                old_hops = hops_f.get(v, max_hops + 1)
+                if new_cost < old_cost or (math.isclose(new_cost, old_cost) and new_hops < old_hops):
+                    dist_f[v] = new_cost
+                    hops_f[v] = new_hops
+                    prev_f[v] = u
+                    heapq.heappush(pq_f, (new_cost, new_hops, v))
+
+                    if v in dist_b and new_hops + hops_b[v] <= max_hops:
+                        total = new_cost + dist_b[v]
+                        if total < best_cost:
+                            best_cost = total
+                            meet = v
+        else:
+            cost_u, hop_u, u = heapq.heappop(pq_b)
+            if cost_u > dist_b.get(u, float('inf')) or hop_u > hops_b.get(u, max_hops + 1):
+                continue
+            if hop_u >= max_hops:
+                continue
+
+            for pred, edge in reverse_graph.get(u, []):
+                if pred in blocked or not _allows(edge, allowed):
+                    continue
+                new_hops = hop_u + 1
+                if new_hops > max_hops:
+                    continue
+                new_cost = cost_u + float(w(edge))
+                old_cost = dist_b.get(pred, float('inf'))
+                old_hops = hops_b.get(pred, max_hops + 1)
+                if new_cost < old_cost or (math.isclose(new_cost, old_cost) and new_hops < old_hops):
+                    dist_b[pred] = new_cost
+                    hops_b[pred] = new_hops
+                    prev_b[pred] = u
+                    heapq.heappush(pq_b, (new_cost, new_hops, pred))
+
+                    if pred in dist_f and new_hops + hops_f[pred] <= max_hops:
+                        total = new_cost + dist_f[pred]
+                        if total < best_cost:
+                            best_cost = total
+                            meet = pred
+
+    if meet is None:
+        return [], float('inf')
+
+    left = _reconstruct_path(prev_f, meet)
+    right: List[IATA] = []
+    cur = prev_b.get(meet)
+    while cur is not None:
+        right.append(cur)
+        cur = prev_b.get(cur)
+
+    return left + right, best_cost
+
 def _reconstruct_path(prev: Dict[IATA, Optional[IATA]], goal: IATA) -> List[IATA]:
     """Walk backwards through predecessor map to rebuild the full path."""
     path: List[IATA] = []
