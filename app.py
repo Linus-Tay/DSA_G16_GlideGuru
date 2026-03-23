@@ -193,11 +193,18 @@ def api_search():
     blocked.discard(start)
     blocked.discard(goal)
 
-    want = max(1, min(limit + 1, 60))
+    if mode in {"Fewest Connections", "Fewest hops"}:
+        # Ask for a much larger candidate pool first so valid low-hop alternatives
+        # do not disappear just because the visible limit is small.
+        want = max(20, min(limit * 5, 60))
+    else:
+        want = max(1, min(limit + 1, 60))
+
     wf = weight_fn(mode)
     all_paths = search_paths(start, goal, mode, blocked, allowed, max_hops, want)
     has_more = len(all_paths) > limit
     paths = all_paths[:limit]
+    
 
     options = []
     for i, p in enumerate(paths, 1):

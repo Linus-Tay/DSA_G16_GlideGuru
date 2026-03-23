@@ -1,11 +1,13 @@
 import heapq
-import math 
+import math
 from collections import deque
 from typing import Callable, Dict, List, Optional, Set, Tuple
 from glideguru.data import Edge, GraphData, IATA
 
+
 def _allows(edge: Edge, allowed: Optional[Set[str]]) -> bool:
     return (not allowed) or any(c.iata in allowed for c in edge.carriers)
+
 
 def bfs_hops(
     gd: GraphData,
@@ -77,53 +79,49 @@ def dijkstra(
     """
     Dijkstra fixed for the Resource-Constrained Shortest Path Problem.
     """
-    if start in blocked or goal in blocked: 
+    if start in blocked or goal in blocked:
         return [], float('inf')
-    
+
     # Priority queue stores: (accumulated_cost, hops_taken, current_node, path_history)
     pq = [(0.0, 0, start, [start])]
-    
-    # updated to Track the FEWEST hops we've used to reach a node.
+
+    # Track the FEWEST hops we've used to reach a node.
     best_hops: Dict[IATA, int] = {}
     blocked_edges = blocked_edges or set()
 
-    # (total_cost, hops_used, current_node, path_so_far)
-    pq: List[Tuple[float, int, IATA, List[IATA]]] = [(0.0, 0, start, [start])]
-
-    # best_cost[(node, hops)] = cheapest known cost to reach that exact state
-    best_cost: Dict[Tuple[IATA, int], float] = {(start, 0): 0.0}
-
     while pq:
         cost, hops, u, path = heapq.heappop(pq)
-        
+
         if u == goal:
             return path, cost
-            
+
         # Since we pop by cost, any subsequent visit is more expensive.
         # We ONLY keep this path alive if it used strictly FEWER hops.
         if best_hops.get(u, float('inf')) <= hops:
             continue
         best_hops[u] = hops
-        
+
         if hops >= max_hops:
             continue
-            
+
         for edge in gd.graph.get(u, []):
             v = edge.dest
-            
+
             if v in blocked or (u, v) in blocked_edges:
                 continue
-                
+
             if allowed is not None and not any(c.iata in allowed for c in edge.carriers):
                 continue
-                
+
             new_cost = cost + float(w(edge))
             heapq.heappush(pq, (new_cost, hops + 1, v, path + [v]))
-            
+
     return [], float('inf')
+
 
 # A* algorithm using haversine heuristic (shortest distance in km)
 _EARTH_RADIUS_KM = 6_371.0
+
 
 def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     lat1, lon1, lat2, lon2 = (math.radians(x) for x in (lat1, lon1, lat2, lon2))
@@ -133,6 +131,7 @@ def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     a = min(1.0, max(0.0, a))
     return 2 * _EARTH_RADIUS_KM * math.asin(math.sqrt(a))
 
+
 def astar(
     gd: GraphData, start: IATA, goal: IATA, blocked: Set[IATA], allowed: Optional[Set[str]],
     max_hops: int, blocked_edges: Optional[Set[Tuple[IATA, IATA]]] = None,
@@ -140,15 +139,15 @@ def astar(
 
     if start in blocked or goal in blocked:
         return [], float('inf')
-    
+
     if start == goal:
         return [start], 0.0
-    
+
     blocked_edges = blocked_edges or set()
     goal_airport = gd.airports.get(goal)
     if not goal_airport:
         return [], float('inf')
-    
+
     goal_lat = goal_airport.lat
     goal_lon = goal_airport.lon
 
@@ -157,14 +156,14 @@ def astar(
         if not airport:
             return 0.0
         return _haversine(airport.lat, airport.lon, goal_lat, goal_lon)
-    
+
     # Priority queue: (f_score, counter, g_score, hops, node, path_history)
     counter = 0
     open_set: List[Tuple[float, int, float, int, IATA, List[IATA]]] = []
     heapq.heappush(open_set, (h(start), counter, 0.0, 0, start, [start]))
     counter += 1
 
-    # THE FIX: Replace 'closed' set and 'g_score' pruning with best_hops tracking
+    # Replace 'closed' set and 'g_score' pruning with best_hops tracking
     best_hops: Dict[IATA, int] = {}
 
     while open_set:
@@ -173,7 +172,7 @@ def astar(
         if current == goal:
             return path, g
 
-        # Only keep more expensive paths if they save us hops* this is important
+        # Only keep more expensive paths if they save us hops
         if best_hops.get(current, float('inf')) <= hops:
             continue
         best_hops[current] = hops
@@ -192,7 +191,7 @@ def astar(
 
             tentative_g = g + edge.km
             f_score = tentative_g + h(neighbor)
-            
+
             # Push the updated path directly into the heap to avoid 'prev' dict collisions
             heapq.heappush(open_set, (f_score, counter, tentative_g, hops + 1, neighbor, path + [neighbor]))
             counter += 1
@@ -314,6 +313,7 @@ def bidirectional_dijkstra(
 
     return left + right, best_cost
 
+
 def _reconstruct_path(prev: Dict[IATA, Optional[IATA]], goal: IATA) -> List[IATA]:
     """Walk backwards through predecessor map to rebuild the full path."""
     path: List[IATA] = []
@@ -325,17 +325,18 @@ def _reconstruct_path(prev: Dict[IATA, Optional[IATA]], goal: IATA) -> List[IATA
     return path
 
 
-
-
 def yen_k_paths(
     gd: GraphData, start: IATA, goal: IATA, w: Callable[[Edge], float], k: int,
     blocked: Set[IATA], allowed: Optional[Set[str]], max_hops: int, use_astar: bool = False
 ) -> List[List[IATA]]:
+    """
+    Yen's K-shortest loopless paths.
 
-    # if use_astar=True when search algorithm uses A*, else false dijkstra is used
+    Important for Fewest Connections mode:
+    when generating a spur path, we must only give the spur search the
+    remaining hop budget, not the full max_hops again.
+    """
 
-
-    # Choose which shortest-path function to use internally
     def _shortest_path(
         gd: GraphData, s: IATA, g: IATA,
         blk: Set[IATA], alw: Optional[Set[str]],
@@ -345,51 +346,43 @@ def yen_k_paths(
             return astar(gd, s, g, blk, alw, mh, be)
         else:
             return dijkstra(gd, s, g, w, blk, alw, mh, be)
-    
+
     first_path, first_cost = _shortest_path(gd, start, goal, blocked, allowed, max_hops)
     if not first_path:
         return []
-    
+
     A = [first_path]
     B: List[Tuple[float, Tuple[IATA, ...]]] = []
 
-    for ki in range(1, k):
+    for _ in range(1, k):
         last_path = A[-1]
-        
-        # We need the cost of the root_path to add to the spur_path cost
-        # Pre-calculating root_cost incrementally as we move the spur node
         accumulated_root_cost = 0.0
 
         for i in range(len(last_path) - 1):
             spur_node = last_path[i]
             root_path = last_path[:i + 1]
 
-            # 1. Update accumulated_root_cost for the current root_path
             if i > 0:
-                prev_node = last_path[i-1]
+                prev_node = last_path[i - 1]
                 edge = gd.edge_lookup[prev_node][spur_node]
                 if use_astar:
                     accumulated_root_cost += edge.km
                 else:
                     accumulated_root_cost += float(w(edge))
 
-            # 2. Identify edges to block
             blocked_edges: Set[Tuple[IATA, IATA]] = set()
             for p in A:
                 if len(p) > i and p[:i + 1] == root_path:
                     blocked_edges.add((p[i], p[i + 1]))
 
-            # 3. Get the spur path AND its cost directly from Dijkstra
             temp_blocked = set(blocked)
             temp_blocked.update(root_path[:-1])
-            
-            # Hops already used by the fixed root portion
-            used_hops = len(root_path) - 1
 
-            # Remaining hops available for the spur portion
+            # Root path already used some hops, so the spur path only gets
+            # the remaining hop budget.
+            used_hops = len(root_path) - 1
             remaining_hops = max_hops - used_hops
 
-            # If the root already used up the hop budget, no spur is possible
             if remaining_hops < 0:
                 continue
 
@@ -397,18 +390,17 @@ def yen_k_paths(
                 gd, spur_node, goal, temp_blocked, allowed,
                 remaining_hops, blocked_edges
             )
-            
+
             if spur_path and spur_cost != float('inf'):
                 total_cand_path = root_path[:-1] + spur_path
                 total_cand_cost = accumulated_root_cost + spur_cost
-                
+
                 if (len(total_cand_path) - 1) <= max_hops:
                     heapq.heappush(B, (total_cand_cost, tuple(total_cand_path)))
 
         if not B:
             break
 
-        # Move the best candidate from B to A, ensuring it's not a duplicate
         while B:
             cost, cand = heapq.heappop(B)
             cand_list = list(cand)

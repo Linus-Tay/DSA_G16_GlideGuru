@@ -287,8 +287,36 @@ function drawRoute(option) {
 
 function setViewMoreVisible(show) {
   const btn = $('#viewMoreBtn');
+  const holder = $('#viewMoreWrap');
   if (!btn) return;
+
   btn.style.display = show ? 'inline-flex' : 'none';
+  if (holder) {
+    holder.style.display = show ? 'flex' : 'none';
+  }
+}
+
+function placeViewMoreAtBottom() {
+  const btn = $('#viewMoreBtn');
+  const wrap = $('#options');
+  if (!btn || !wrap) return;
+
+  let holder = $('#viewMoreWrap');
+  if (!holder) {
+    holder = document.createElement('div');
+    holder.id = 'viewMoreWrap';
+    holder.style.display = 'flex';
+    holder.style.justifyContent = 'center';
+    holder.style.margin = '18px 0 8px 0';
+    holder.style.width = '100%';
+  }
+
+  // Always keep the button at the bottom of the routes list
+  holder.appendChild(btn);
+  wrap.insertAdjacentElement('afterend', holder);
+
+  // Add the + sign in the label
+  btn.textContent = '+ View more routes';
 }
 
 function renderEmptyState(message = 'No routes found for the current filters.') {
@@ -334,6 +362,7 @@ function renderOptions(options) {
   });
 
   selectOption(options[0]);
+  placeViewMoreAtBottom();
 }
 
 function selectOption(option) {
@@ -614,6 +643,7 @@ window.addEventListener('DOMContentLoaded', () => {
   initMap();
   initFilterLists();
   initCollapsibles();
+  placeViewMoreAtBottom();
 
   $('#searchBtn')?.addEventListener('click', () => search(true));
 
