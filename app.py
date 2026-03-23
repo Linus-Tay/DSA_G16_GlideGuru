@@ -7,7 +7,6 @@ from glideguru.unionfind import UnionFind
 import time
 import csv
 import io
-import json
 
 start_time = time.time()
 
@@ -246,20 +245,6 @@ def resolve_route_from_request():
 
     idx = max(1, min(option_id, len(paths))) - 1
     return route_payload(paths[idx], idx + 1, start, goal, mode)
-
-
-@app.get("/export/json")
-def export_json():
-    payload = resolve_route_from_request()
-    if payload is None:
-        return jsonify({"error": "No route available for export"}), 404
-
-    return Response(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        mimetype="application/json",
-        headers={
-            "Content-Disposition": f"attachment; filename=itinerary_{payload['path'][0]}_{payload['path'][-1]}_option_{payload['id']}.json"}
-    )
 
 
 @app.get("/export/csv")
