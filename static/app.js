@@ -8,6 +8,18 @@ let currentLimit = 6;
 let avoidSelected = new Set();
 let airlineSelected = new Set();
 
+let liveSearchTimer = null;
+
+function queueLiveSearch() {
+  clearTimeout(liveSearchTimer);
+  liveSearchTimer = setTimeout(() => {
+    const start = $('#start')?.value;
+    const goal = $('#goal')?.value;
+    if (!start || !goal) return;
+    search(true);
+  }, 180);
+}
+
 const $ = (sel) => document.querySelector(sel);
 
 function makeTomSelect(selector, opts) {
@@ -42,8 +54,18 @@ function initSlider() {
   const slider = $('#max_hops');
   const out = $('#maxHopsVal');
   if (!slider || !out) return;
+
   out.textContent = slider.value;
-  slider.addEventListener('input', () => { out.textContent = slider.value; });
+
+  slider.addEventListener('input', () => {
+    out.textContent = slider.value;
+    queueLiveSearch();
+  });
+
+  slider.addEventListener('change', () => {
+    out.textContent = slider.value;
+    queueLiveSearch();
+  });
 }
 
 function initMap() {

@@ -59,35 +59,70 @@ def legs_list(path: list[str]) -> list[dict]:
         )
     return legs
 
-
 def search_paths(start: str, goal: str, mode: str, blocked: set[str], allowed, max_hops: int, want: int):
     """
     Centralized search wrapper so /api/search and /print use the same logic.
 
-    Fewest hops:
-    - primary route comes from BFS
-    - extra options come from Yen with unit edge weights so alternatives are also
-      hop-oriented rather than cost-oriented
-    """
-    if mode == "Fewest hops":
-        paths: list[list[str]] = []
-        primary = bfs_hops(GD, start, goal, blocked, allowed, max_hops=max_hops)
-        if primary:
-            paths.append(primary)
+    Fewest Connections:
+    - use BFS to get the minimum-hop route first
+    - use Yen to get additional hop-based alternatives
+    - keep all routes up to max_hops
+    - sort by hops first, then time, then price, then distance
 
-        for candidate in yen_k_paths(
+    Other modes:
+    - use Yen's K-shortest paths with the relevant weight function
+    """
+    if mode in {"Fewest Connections", "Fewest hops"}:
+        paths: list[list[str]] = []
+
+        # Find the best minimum-hop route within the user's upper-bound slider
+        primary = bfs_hops(
             GD,
             start,
             goal,
-            weight_fn("Fewest hops"),
+            blocked,
+            allowed,
+            max_hops=max_hops
+        )
+
+        if not primary:
+            return []
+
+        paths.append(primary)
+
+        # Find additional hop-based alternatives, still respecting max_hops
+        alt_paths = yen_k_paths(
+            GD,
+            start,
+            goal,
+            weight_fn("Fewest Connections"),
             k=want,
             blocked=blocked,
             allowed=allowed,
             max_hops=max_hops,
-        ):
-            if candidate not in paths:
+            use_astar=False,
+        )
+
+        for candidate in alt_paths:
+            hops = len(candidate) - 1
+            if candidate not in paths and hops <= max_hops:
                 paths.append(candidate)
+        # Sort so the fewest-hop routes appear first.
+        # Among equal-hop routes, prefer lower time, then lower price, then shorter distance.
+        paths.sort(
+            key=lambda p: (
+                totals(GD, p)[3],  # hops
+                totals(GD, p)[1],  # minutes
+                totals(GD, p)[2],  # price
+                totals(GD, p)[0],  # km
+            )
+        )
+
         return paths
+
+    # For now, keep A* disabled because your Dijkstra is hop-aware
+    # but A* is not yet hop-aware.
+    use_astar = False
 
     return yen_k_paths(
         GD,
@@ -98,6 +133,7 @@ def search_paths(start: str, goal: str, mode: str, blocked: set[str], allowed, m
         blocked=blocked,
         allowed=allowed,
         max_hops=max_hops,
+        use_astar=use_astar,
     )
 
 
@@ -150,33 +186,10 @@ def api_search():
 
     want = max(1, min(limit + 1, 60))
     wf = weight_fn(mode)
-    all_paths = search_paths(start, goal, mode, blocked, allowed, max_hops, want)
 
+    all_paths = search_paths(start, goal, mode, blocked, allowed, max_hops, want)
     has_more = len(all_paths) > limit
     paths = all_paths[:limit]
-    if mode == "Fewest hops":
-        paths: list[list[str]] = []
-        p = bfs_hops(GD, start, goal, blocked, allowed, max_hops=max_hops)
-        if p:
-            paths.append(p)
-
-        alt = yen_k_paths(
-            GD, start, goal, weight_fn("Cost-effective"),
-            k=want, blocked=blocked, allowed=allowed, max_hops=max_hops
-        )
-        for x in alt:
-            if x not in paths:
-                paths.append(x)
-
-        has_more = len(paths) > limit
-        paths = paths[:limit]
-        wf = weight_fn("Fewest hops")
-    else:
-        wf = weight_fn(mode)
-        use_astar = (mode == "Shortest")
-        paths = yen_k_paths(GD, start, goal, wf, k=want, blocked=blocked, allowed=allowed, max_hops=max_hops, use_astar=use_astar)
-        has_more = len(paths) > limit
-        paths = paths[:limit]
 
     options = []
     for i, p in enumerate(paths, 1):
@@ -234,22 +247,8 @@ def print_view():
     blocked.discard(goal)
 
     want = max(1, min(limit, 60))
-
-    if mode == "Fewest hops":
-        paths: list[list[str]] = []
-        p = bfs_hops(GD, start, goal, blocked, allowed, max_hops=max_hops)
-        if p:
-            paths.append(p)
-        alt = yen_k_paths(GD, start, goal, weight_fn("Cost-effective"), k=want, blocked=blocked, allowed=allowed, max_hops=max_hops)
-        for x in alt:
-            if x not in paths:
-                paths.append(x)
-        paths = paths[:limit]
-    else:
-        wf = weight_fn(mode)
-        use_astar = (mode == "Shortest")
-        paths = yen_k_paths(GD, start, goal, wf, k=want, blocked=blocked, allowed=allowed, max_hops=max_hops, use_astar=use_astar)
-
+    paths = search_paths(start, goal, mode, blocked, allowed, max_hops, want)[:limit]
+    
     if not paths:
         return render_template(
             "print.html",

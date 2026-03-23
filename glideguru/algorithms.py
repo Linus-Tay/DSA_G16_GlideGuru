@@ -64,62 +64,70 @@ def bfs_hops(
     return list(reversed(path))
 
 
-def dijkstra(   # to return list of paths and total cost)
-    gd: GraphData, 
-    start: IATA, 
-    goal: IATA, 
-    w: Callable[[Edge], float], 
-    blocked: Set[IATA], 
-    allowed: Optional[Set[str]], 
+def dijkstra(
+    gd: GraphData,
+    start: IATA,
+    goal: IATA,
+    w: Callable[[Edge], float],
+    blocked: Set[IATA],
+    allowed: Optional[Set[str]],
     max_hops: int,
     blocked_edges: Optional[Set[Tuple[IATA, IATA]]] = None
 ) -> Tuple[List[IATA], float]:
     """
-    Baseline Dijkstra stub for Yen's Algorithm testing.
-    Returns (path_list, total_cost).
+    Dijkstra with hop-aware state.
+
+    Important:
+    We must track cost by (node, hops_used), not just by node,
+    because a slightly more expensive path with fewer hops can still be valid
+    while a cheaper path with too many hops may be unusable.
     """
-    if start in blocked or goal in blocked: 
-        return [], float('inf')
-    
-    # Priority queue stores: (accumulated_cost, hops_taken, current_node, path_history)
-    pq = [(0.0, 0, start, [start])]
-    visited: Dict[IATA, float] = {}
+    if start in blocked or goal in blocked:
+        return [], float("inf")
+
     blocked_edges = blocked_edges or set()
+
+    # (total_cost, hops_used, current_node, path_so_far)
+    pq: List[Tuple[float, int, IATA, List[IATA]]] = [(0.0, 0, start, [start])]
+
+    # best_cost[(node, hops)] = cheapest known cost to reach that exact state
+    best_cost: Dict[Tuple[IATA, int], float] = {(start, 0): 0.0}
 
     while pq:
         cost, hops, u, path = heapq.heappop(pq)
-        
-        # If we reached the destination, return the path and its cost
+
+        # Skip stale heap entries
+        if cost > best_cost.get((u, hops), float("inf")):
+            continue
+
+        # If destination reached, this is the optimal valid state
         if u == goal:
             return path, cost
-            
-        # If we've found a cheaper way to this node already, skip it
-        if u in visited and visited[u] <= cost:
-            continue
-        visited[u] = cost
-        
-        # Stop exploring this branch if it exceeds the max connections
+
+        # Can't add more edges once max_hops is reached
         if hops >= max_hops:
             continue
-            
-        # Explore neighbors
+
         for edge in gd.graph.get(u, []):
             v = edge.dest
-            
-            # 1. Check if node or specific edge is blocked (Crucial for Yen's)
+
+            # Blocked airport or blocked edge (used by Yen)
             if v in blocked or (u, v) in blocked_edges:
                 continue
-                
-            # 2. Check airline constraints
+
+            # Airline filter
             if allowed is not None and not any(c.iata in allowed for c in edge.carriers):
                 continue
-                
-            # Calculate new cost using the dynamic weight function w()
-            new_cost = cost + float(w(edge))
-            heapq.heappush(pq, (new_cost, hops + 1, v, path + [v]))
-            
-    # Return empty if no path exists
-    return [], float('inf')
+
+            next_hops = hops + 1
+            next_cost = cost + float(w(edge))
+            state = (v, next_hops)
+
+            if next_cost < best_cost.get(state, float("inf")):
+                best_cost[state] = next_cost
+                heapq.heappush(pq, (next_cost, next_hops, v, path + [v]))
+
+    return [], float("inf")
 
 # A* algorithm using haversine heuristic (shortest distance in km)
 _EARTH_RADIUS_KM = 6_371.0
@@ -283,9 +291,19 @@ def yen_k_paths(
             temp_blocked = set(blocked)
             temp_blocked.update(root_path[:-1])
             
+            # Hops already used by the fixed root portion
+            used_hops = len(root_path) - 1
+
+            # Remaining hops available for the spur portion
+            remaining_hops = max_hops - used_hops
+
+            # If the root already used up the hop budget, no spur is possible
+            if remaining_hops < 0:
+                continue
+
             spur_path, spur_cost = _shortest_path(
                 gd, spur_node, goal, temp_blocked, allowed,
-                max_hops, blocked_edges
+                remaining_hops, blocked_edges
             )
             
             if spur_path and spur_cost != float('inf'):
