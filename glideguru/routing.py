@@ -18,7 +18,7 @@ def weight_fn(mode: str) -> Callable[[Edge], float]:
     if mode == "Shortest": return lambda e: e.km
     if mode == "Fastest": return lambda e: float(e.minutes)
     if mode == "Cheapest": return lambda e: e.price
-    if mode == "Fewest hops": return lambda _e: 1.0
+    if mode == "Fewest Connections": return lambda _e: 1.0
     if mode == "Cost-effective":
         return lambda e: (
         (0.5 * e.price) +   # saves 50 cents per layover
