@@ -4,6 +4,7 @@ from glideguru.data import load_graph, all_carrier_codes
 from glideguru.algorithms import bfs_hops, yen_k_paths, astar, bidirectional_dijkstra
 from glideguru.routing import totals, weight_fn, score_of, top_k_cost_effective, RouteOption
 from glideguru.unionfind import UnionFind
+from glideguru.nearby import get_nearby_viable_swaps
 import time
 import csv
 import io
@@ -364,6 +365,49 @@ def print_view():
         hops=payload["summary"]["connections"],
         table=table,
     )
+
+@app.post("/api/nearby-swaps")
+def api_nearby_swaps():
+    data = request.get_json(silent=True) or {}
+
+    raw_path = data.get("path") or []
+    clicked_index = int(data.get("clicked_index", -1))
+    radius_km = float(data.get("radius_km", 120))
+    blocked = {str(x).strip().upper() for x in (data.get("blocked") or []) if str(x).strip()}
+    allowed_raw = [str(x).strip().upper() for x in (data.get("allowed") or []) if str(x).strip()]
+    allowed = set(allowed_raw) if allowed_raw else None
+    option_id = int(data.get("option_id", 1))
+
+    path = [str(x).strip().upper() for x in raw_path if str(x).strip()]
+
+    if len(path) < 2:
+        return jsonify({"error": "Invalid path"}), 400
+
+    if clicked_index < 0 or clicked_index >= len(path):
+        return jsonify({"error": "Invalid clicked index"}), 400
+
+    for code in path:
+        if code not in GD.airports:
+            return jsonify({"error": f"Invalid airport in path: {code}"}), 400
+
+    try:
+        options = get_nearby_viable_swaps(
+            gd=GD,
+            path=path,
+            clicked_index=clicked_index,
+            blocked=blocked,
+            allowed=allowed,
+            radius_km=radius_km,
+            limit=8,
+            option_id=option_id,
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    return jsonify({
+        "clicked_index": clicked_index,
+        "options": options,
+    })
 
 
 if __name__ == "__main__":

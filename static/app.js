@@ -9,6 +9,9 @@ let avoidSelected = new Set();
 let airlineSelected = new Set();
 
 let liveSearchTimer = null;
+let selectedOption = null;
+let nearbySwapCache = new Map();
+let nearbyRequestCounter = 0;
 
 function queueLiveSearch() {
   clearTimeout(liveSearchTimer);
@@ -39,14 +42,32 @@ function initTomSelect() {
     sortField: [{ field: '$score', direction: 'desc' }],
   };
 
-  tsStart = makeTomSelect('#start', common);
-  tsGoal = makeTomSelect('#goal', common);
+  tsStart = makeTomSelect('#start', {
+    ...common,
+    placeholder: 'Select start airport...',
+    items: [],
+    onInitialize: function () {
+      this.clear(true);
+      this.inputState();
+    },
+  });
+
+  tsGoal = makeTomSelect('#goal', {
+    ...common,
+    placeholder: 'Select destination airport...',
+    items: [],
+    onInitialize: function () {
+      this.clear(true);
+      this.inputState();
+    },
+  });
 
   tsMode = makeTomSelect('#mode', {
     create: false,
     persist: false,
     closeAfterSelect: true,
     searchField: [],
+    placeholder: 'Select mode...',
   });
 }
 
@@ -55,15 +76,19 @@ function initSlider() {
   const out = $('#maxHopsVal');
   if (!slider || !out) return;
 
-  out.textContent = slider.value;
+  const updateLabel = () => {
+    out.textContent = slider.value === '6' ? '6+' : slider.value;
+  };
+
+  updateLabel();
 
   slider.addEventListener('input', () => {
-    out.textContent = slider.value;
+    updateLabel();
     queueLiveSearch();
   });
 
   slider.addEventListener('change', () => {
-    out.textContent = slider.value;
+    updateLabel();
     queueLiveSearch();
   });
 }
@@ -118,6 +143,180 @@ function makeAirportIcon(role) {
     popupAnchor: [0, -14],
     tooltipAnchor: [0, -16],
   });
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function fmtSigned(value, suffix = '', decimals = 0) {
+  const num = Number(value || 0);
+  const sign = num > 0 ? '+' : '';
+  return `${sign}${num.toFixed(decimals)}${suffix}`;
+}
+
+function updateSelectedCard(option) {
+  const card = document.querySelector(`.card[data-id="${option.id}"]`);
+  if (!card) return;
+
+  const route = card.querySelector('.route');
+  if (route) {
+    route.textContent = option.path.join(' → ');
+  }
+
+  const pillValues = card.querySelectorAll('.pill .v');
+  if (pillValues.length >= 4) {
+    pillValues[0].textContent = `SGD ${Number(option.price || 0).toFixed(2)}`;
+    pillValues[1].textContent = fmtDuration(option.minutes);
+    pillValues[2].textContent = `${Math.round(Number(option.km || 0))} km`;
+    pillValues[3].textContent = String(option.hops);
+  }
+}
+
+function buildNearbyPopupHtml(point, roleLabel, popupKey, options) {
+  const title = escapeHtml(point.name && point.name !== point.label ? point.name : point.label);
+  const cityLine = [point.city, point.country].filter(Boolean).join(', ');
+
+  const swapsHtml = !options || options.length === 0
+    ? `<div class="swapEmpty">No nearby viable airports found for this point.</div>`
+    : options.map((opt, idx) => `
+        <button type="button" class="swapOptionBtn" data-popup-key="${escapeHtml(popupKey)}" data-swap-index="${idx}">
+          <div class="swapTop">
+            <div class="swapCode">${escapeHtml(opt.iata)}</div>
+            <div class="swapName">${escapeHtml(opt.name || '')}</div>
+          </div>
+          <div class="swapMeta">
+            <span>${escapeHtml(opt.city || '')}${opt.country ? `, ${escapeHtml(opt.country)}` : ''}</span>
+            <span>${escapeHtml(String(opt.distance_from_clicked_km))} km away</span>
+          </div>
+          <div class="swapMeta">
+            <span>${fmtSigned(opt.delta_minutes, ' min')}</span>
+            <span>${fmtSigned(opt.delta_price, ' SGD', 2)}</span>
+            <span>${fmtSigned(opt.delta_km, ' km', 1)}</span>
+          </div>
+        </button>
+      `).join('');
+
+  return `
+    <div class="mapPopup mapPopupCompact mapPopupSwap">
+      <div class="mapPopupTitle">${title}</div>
+
+      <div class="mapPopupList">
+        <div class="mapPopupRow">
+          <span class="mapPopupRowLabel">Code</span>
+          <span class="mapPopupRowValue">${escapeHtml(point.code)}</span>
+        </div>
+        <div class="mapPopupRow">
+          <span class="mapPopupRowLabel">Role</span>
+          <span class="mapPopupRowValue">${escapeHtml(roleLabel)}</span>
+        </div>
+        ${cityLine ? `
+        <div class="mapPopupRow">
+          <span class="mapPopupRowLabel">Location</span>
+          <span class="mapPopupRowValue">${escapeHtml(cityLine)}</span>
+        </div>` : ''}
+      </div>
+
+      <div class="swapSectionTitle">Nearby viable airports</div>
+      <div class="swapList">${swapsHtml}</div>
+    </div>
+  `;
+}
+
+function bindSwapButtonsForPopup(popupKey) {
+  document.querySelectorAll(`.swapOptionBtn[data-popup-key="${popupKey}"]`).forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const key = btn.getAttribute('data-popup-key');
+      const index = Number(btn.getAttribute('data-swap-index'));
+      const cached = nearbySwapCache.get(key) || [];
+      const swap = cached[index];
+      if (!swap || !swap.option) return;
+
+      const nextOption = {
+        ...swap.option,
+        id: selectedOption?.id ?? swap.option.id ?? 1,
+        __isSwapped: true,
+      };
+
+      if (tsStart && nextOption.path?.length) {
+        tsStart.setValue(nextOption.path[0], true);
+      }
+      if (tsGoal && nextOption.path?.length) {
+        tsGoal.setValue(nextOption.path[nextOption.path.length - 1], true);
+      }
+
+      updateSelectedCard(nextOption);
+      selectOption(nextOption);
+    });
+  });
+}
+
+async function loadNearbySwaps(marker, point, pointIndex, roleLabel, option) {
+  const popupKey = `${option.id || 1}:${pointIndex}:${point.code}`;
+  const requestId = ++nearbyRequestCounter;
+
+  marker.setPopupContent(`
+    <div class="mapPopup mapPopupCompact mapPopupSwap">
+      <div class="mapPopupTitle">${escapeHtml(point.name || point.label || point.code)}</div>
+      <div class="swapLoading">Checking nearby viable airports...</div>
+    </div>
+  `);
+  marker.openPopup();
+
+  try {
+    const res = await fetch('/api/nearby-swaps', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path: option.path || [],
+        clicked_index: pointIndex,
+        radius_km: 120,
+        blocked: Array.from(avoidSelected),
+        allowed: Array.from(airlineSelected),
+        option_id: option.id || 1,
+      }),
+    });
+
+    const data = await res.json();
+
+    if (requestId !== nearbyRequestCounter) {
+      return;
+    }
+
+    if (!res.ok) {
+      marker.setPopupContent(`
+        <div class="mapPopup mapPopupCompact mapPopupSwap">
+          <div class="mapPopupTitle">${escapeHtml(point.name || point.label || point.code)}</div>
+          <div class="swapEmpty">${escapeHtml(data.error || 'Unable to load nearby airports.')}</div>
+        </div>
+      `);
+      marker.openPopup();
+      return;
+    }
+
+    const options = data.options || [];
+    nearbySwapCache.set(popupKey, options);
+
+    marker.setPopupContent(buildNearbyPopupHtml(point, roleLabel, popupKey, options));
+    marker.openPopup();
+
+    setTimeout(() => {
+      bindSwapButtonsForPopup(popupKey);
+    }, 0);
+  } catch (_err) {
+    marker.setPopupContent(`
+      <div class="mapPopup mapPopupCompact mapPopupSwap">
+        <div class="mapPopupTitle">${escapeHtml(point.name || point.label || point.code)}</div>
+        <div class="swapEmpty">Unable to load nearby airports right now.</div>
+      </div>
+    `);
+    marker.openPopup();
+  }
 }
 
 function drawRoute(option) {
@@ -255,21 +454,23 @@ function drawRoute(option) {
     );
 
     marker.bindPopup(`
-  <div class="mapPopup mapPopupCompact">
-    <div class="mapPopupTitle">${airportTitle}</div>
+      <div class="mapPopup mapPopupCompact">
+        <div class="mapPopupTitle">${airportTitle}</div>
 
-    <div class="mapPopupList">
-      <div class="mapPopupRow">
-        <span class="mapPopupRowLabel">Code</span>
-        <span class="mapPopupRowValue">${p.code}</span>
+        <div class="mapPopupList">
+          <div class="mapPopupRow">
+            <span class="mapPopupRowLabel">Code</span>
+            <span class="mapPopupRowValue">${p.code}</span>
+          </div>
+          <div class="mapPopupRow">
+            <span class="mapPopupRowLabel">Role</span>
+            <span class="mapPopupRowValue">${roleLabel}</span>
+          </div>
+        </div>
       </div>
-      <div class="mapPopupRow">
-        <span class="mapPopupRowLabel">Role</span>
-        <span class="mapPopupRowValue">${roleLabel}</span>
-      </div>
-    </div>
-  </div>
-`);
+    `, {
+      className: 'nearby-swap-popup'
+    });
 
     marker.on('mouseover', function () {
       this.openTooltip();
@@ -277,6 +478,10 @@ function drawRoute(option) {
 
     marker.on('mouseout', function () {
       this.closeTooltip();
+    });
+
+    marker.on('click', function () {
+      loadNearbySwaps(marker, p, idx, roleLabel, option);
     });
 
     markers.push(marker);
@@ -311,11 +516,8 @@ function placeViewMoreAtBottom() {
     holder.style.width = '100%';
   }
 
-  // Always keep the button at the bottom of the routes list
   holder.appendChild(btn);
   wrap.insertAdjacentElement('afterend', holder);
-
-  // Add the + sign in the label
   btn.textContent = '+ View more routes';
 }
 
@@ -328,13 +530,18 @@ function renderEmptyState(message = 'No routes found for the current filters.') 
   if (details) {
     details.innerHTML = `<p class="detailsSub">${message}</p>`;
   }
+  selectedOption = null;
+  nearbySwapCache.clear();
   clearMap(true);
 }
 
 function renderOptions(options) {
   const wrap = $('#options');
   if (!wrap) return;
+
   wrap.innerHTML = '';
+  nearbySwapCache.clear();
+  selectedOption = null;
 
   if (!options || options.length === 0) {
     renderEmptyState();
@@ -366,6 +573,8 @@ function renderOptions(options) {
 }
 
 function selectOption(option) {
+  selectedOption = option;
+
   document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
   const card = document.querySelector(`.card[data-id="${option.id}"]`);
   if (card) card.classList.add('selected');
@@ -467,6 +676,19 @@ function renderDetails(option) {
     `;
   }).join('');
 
+  const actionHtml = option.__isSwapped
+    ? `
+      <div class="detailsSub" style="margin-top:10px;">
+        Export/print links are hidden for swapped nearby-airport routes for now.
+      </div>
+    `
+    : `
+      <div style="display:flex; gap:10px; flex-wrap:wrap;">
+        <a class="primary" href="/print?${params}" target="_blank" style="text-decoration:none;">Print itinerary</a>
+        <a class="primary" href="/export/csv?${params}" style="text-decoration:none;">Download CSV</a>
+      </div>
+    `;
+
   d.innerHTML = `
     <p class="detailsTitle">Selected route</p>
     <p class="detailsSub">${option.path.join(' → ')}</p>
@@ -480,10 +702,7 @@ function renderDetails(option) {
 
     <div class="divider"></div>
 
-    <div style="display:flex; gap:10px; flex-wrap:wrap;">
-      <a class="primary" href="/print?${params}" target="_blank" style="text-decoration:none;">Print itinerary</a>
-      <a class="primary" href="/export/csv?${params}" style="text-decoration:none;">Download CSV</a>
-    </div>
+    ${actionHtml}
 
     <div class="divider"></div>
 
@@ -511,6 +730,7 @@ function buildList(containerId, items, getKey, getMain, getSub, selectedSet) {
     cb.addEventListener('change', () => {
       if (cb.checked) selectedSet.add(key);
       else selectedSet.delete(key);
+      if (selectedOption) queueLiveSearch();
     });
 
     const text = document.createElement('div');
@@ -573,8 +793,17 @@ function initFilterLists() {
   avoidSearch?.addEventListener('input', renderAvoid);
   airlineSearch?.addEventListener('input', renderAirlines);
 
-  $('#clearAvoid')?.addEventListener('click', () => { avoidSelected.clear(); renderAvoid(); });
-  $('#clearAirlines')?.addEventListener('click', () => { airlineSelected.clear(); renderAirlines(); });
+  $('#clearAvoid')?.addEventListener('click', () => {
+    avoidSelected.clear();
+    renderAvoid();
+    if (selectedOption) queueLiveSearch();
+  });
+
+  $('#clearAirlines')?.addEventListener('click', () => {
+    airlineSelected.clear();
+    renderAirlines();
+    if (selectedOption) queueLiveSearch();
+  });
 
   renderAvoid();
   renderAirlines();
