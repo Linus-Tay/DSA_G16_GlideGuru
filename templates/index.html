@@ -74,7 +74,6 @@
         <div>
             <label for="start">From</label>
             <select id="start">
-                <option value="">Select start...</option>
                 {% for a in airports %}
                     <option value="{{ a.code }}">{{ a.label }}</option>
                 {% endfor %}
@@ -84,7 +83,6 @@
         <div>
             <label for="goal">To</label>
             <select id="goal">
-                <option value="">Select destination...</option>
                 {% for a in airports %}
                     <option value="{{ a.code }}">{{ a.label }}</option>
                 {% endfor %}
@@ -94,9 +92,11 @@
         <div>
             <label for="mode">Mode</label>
             <select id="mode">
-            <option value="Shortest" selected>Shortest</option>
-            <option value="Cheapest">Cheapest</option>
-            <option value="Fastest">Fastest</option>
+            <option value="Shortest" selected>Shortest Distance</option>
+            <option value="Cheapest">Cheapest Price</option>
+            <option value="Fastest">Fastest Time</option>
+            <option value="Cost-effective">Cost-effective</option>
+            <option value="Fewest hops">Fewest Connections</option>
             </select>
         </div>
         </div>

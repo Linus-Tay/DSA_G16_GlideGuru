@@ -1,5 +1,5 @@
 let map = null;
-let routeLine = null;
+let routeLines = [];
 let markers = [];
 
 let tsStart = null, tsGoal = null, tsMode = null;
@@ -7,6 +7,21 @@ let tsStart = null, tsGoal = null, tsMode = null;
 let currentLimit = 6;
 let avoidSelected = new Set();
 let airlineSelected = new Set();
+
+let liveSearchTimer = null;
+let selectedOption = null;
+let nearbySwapCache = new Map();
+let nearbyRequestCounter = 0;
+
+function queueLiveSearch() {
+  clearTimeout(liveSearchTimer);
+  liveSearchTimer = setTimeout(() => {
+    const start = $('#start')?.value;
+    const goal = $('#goal')?.value;
+    if (!start || !goal) return;
+    search(true);
+  }, 180);
+}
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -22,23 +37,37 @@ function initTomSelect() {
     persist: false,
     maxOptions: 9999,
     closeAfterSelect: true,
-
     allowEmptyOption: true,
-    
     searchField: ['text', 'value'],
     sortField: [{ field: '$score', direction: 'desc' }],
-
   };
 
-  tsStart = makeTomSelect('#start', common);
-  tsGoal  = makeTomSelect('#goal', common);
+  tsStart = makeTomSelect('#start', {
+    ...common,
+    placeholder: 'Select start airport...',
+    items: [],
+    onInitialize: function () {
+      this.clear(true);
+      this.inputState();
+    },
+  });
 
-  // Optional: make mode also tomselect for consistent styling
-  tsMode  = makeTomSelect('#mode', {
+  tsGoal = makeTomSelect('#goal', {
+    ...common,
+    placeholder: 'Select destination airport...',
+    items: [],
+    onInitialize: function () {
+      this.clear(true);
+      this.inputState();
+    },
+  });
+
+  tsMode = makeTomSelect('#mode', {
     create: false,
     persist: false,
     closeAfterSelect: true,
-    searchField: [], // disables search typing for mode
+    searchField: [],
+    placeholder: 'Select mode...',
   });
 }
 
@@ -46,8 +75,22 @@ function initSlider() {
   const slider = $('#max_hops');
   const out = $('#maxHopsVal');
   if (!slider || !out) return;
-  out.textContent = slider.value;
-  slider.addEventListener('input', () => { out.textContent = slider.value; });
+
+  const updateLabel = () => {
+    out.textContent = slider.value === '6' ? '6+' : slider.value;
+  };
+
+  updateLabel();
+
+  slider.addEventListener('input', () => {
+    updateLabel();
+    queueLiveSearch();
+  });
+
+  slider.addEventListener('change', () => {
+    updateLabel();
+    queueLiveSearch();
+  });
 }
 
 function initMap() {
@@ -61,55 +104,449 @@ function initMap() {
   }).addTo(map);
 }
 
-function clearMap() {
+function clearMap(resetView = false) {
   if (!map) return;
-  if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
-  markers.forEach(m => map.removeLayer(m));
+
+  routeLines.forEach(line => map.removeLayer(line));
+  routeLines = [];
+
+  markers.forEach(marker => map.removeLayer(marker));
   markers = [];
+
+  if (resetView) {
+    map.setView([1.35, 103.82], 3);
+  }
 }
 
-function drawRoute(path) {
+function airportSymbol(role) {
+  if (role === 'start') return '✈';
+  if (role === 'end') return '⚑';
+  return '●';
+}
+
+function airportMarkerClass(role) {
+  if (role === 'start') return 'airport-marker airport-marker-start';
+  if (role === 'end') return 'airport-marker airport-marker-end';
+  return 'airport-marker airport-marker-layover';
+}
+
+function makeAirportIcon(role) {
+  return L.divIcon({
+    className: 'airport-marker-wrapper',
+    html: `
+      <div class="${airportMarkerClass(role)}">
+        <span>${airportSymbol(role)}</span>
+      </div>
+    `,
+    iconSize: [28, 28],
+    iconAnchor: [14, 14],
+    popupAnchor: [0, -14],
+    tooltipAnchor: [0, -16],
+  });
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function fmtSigned(value, suffix = '', decimals = 0) {
+  const num = Number(value || 0);
+  const sign = num > 0 ? '+' : '';
+  return `${sign}${num.toFixed(decimals)}${suffix}`;
+}
+
+function updateSelectedCard(option) {
+  const card = document.querySelector(`.card[data-id="${option.id}"]`);
+  if (!card) return;
+
+  const route = card.querySelector('.route');
+  if (route) {
+    route.textContent = option.path.join(' → ');
+  }
+
+  const pillValues = card.querySelectorAll('.pill .v');
+  if (pillValues.length >= 4) {
+    pillValues[0].textContent = `SGD ${Number(option.price || 0).toFixed(2)}`;
+    pillValues[1].textContent = fmtDuration(option.minutes);
+    pillValues[2].textContent = `${Math.round(Number(option.km || 0))} km`;
+    pillValues[3].textContent = String(option.hops);
+  }
+}
+
+function buildNearbyPopupHtml(point, roleLabel, popupKey, options) {
+  const title = escapeHtml(point.name && point.name !== point.label ? point.name : point.label);
+  const cityLine = [point.city, point.country].filter(Boolean).join(', ');
+
+  const swapsHtml = !options || options.length === 0
+    ? `<div class="swapEmpty">No nearby viable airports found for this point.</div>`
+    : options.map((opt, idx) => `
+        <button type="button" class="swapOptionBtn" data-popup-key="${escapeHtml(popupKey)}" data-swap-index="${idx}">
+          <div class="swapTop">
+            <div class="swapCode">${escapeHtml(opt.iata)}</div>
+            <div class="swapName">${escapeHtml(opt.name || '')}</div>
+          </div>
+          <div class="swapMeta">
+            <span>${escapeHtml(opt.city || '')}${opt.country ? `, ${escapeHtml(opt.country)}` : ''}</span>
+            <span>${escapeHtml(String(opt.distance_from_clicked_km))} km away</span>
+          </div>
+          <div class="swapMeta">
+            <span>${fmtSigned(opt.delta_minutes, ' min')}</span>
+            <span>${fmtSigned(opt.delta_price, ' SGD', 2)}</span>
+            <span>${fmtSigned(opt.delta_km, ' km', 1)}</span>
+          </div>
+        </button>
+      `).join('');
+
+  return `
+    <div class="mapPopup mapPopupCompact mapPopupSwap">
+      <div class="mapPopupTitle">${title}</div>
+
+      <div class="mapPopupList">
+        <div class="mapPopupRow">
+          <span class="mapPopupRowLabel">Code</span>
+          <span class="mapPopupRowValue">${escapeHtml(point.code)}</span>
+        </div>
+        <div class="mapPopupRow">
+          <span class="mapPopupRowLabel">Role</span>
+          <span class="mapPopupRowValue">${escapeHtml(roleLabel)}</span>
+        </div>
+        ${cityLine ? `
+        <div class="mapPopupRow">
+          <span class="mapPopupRowLabel">Location</span>
+          <span class="mapPopupRowValue">${escapeHtml(cityLine)}</span>
+        </div>` : ''}
+      </div>
+
+      <div class="swapSectionTitle">Nearby viable airports</div>
+      <div class="swapList">${swapsHtml}</div>
+    </div>
+  `;
+}
+
+function bindSwapButtonsForPopup(popupKey) {
+  document.querySelectorAll(`.swapOptionBtn[data-popup-key="${popupKey}"]`).forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const key = btn.getAttribute('data-popup-key');
+      const index = Number(btn.getAttribute('data-swap-index'));
+      const cached = nearbySwapCache.get(key) || [];
+      const swap = cached[index];
+      if (!swap || !swap.option) return;
+
+      const nextOption = {
+        ...swap.option,
+        id: selectedOption?.id ?? swap.option.id ?? 1,
+        __isSwapped: true,
+      };
+
+      if (tsStart && nextOption.path?.length) {
+        tsStart.setValue(nextOption.path[0], true);
+      }
+      if (tsGoal && nextOption.path?.length) {
+        tsGoal.setValue(nextOption.path[nextOption.path.length - 1], true);
+      }
+
+      updateSelectedCard(nextOption);
+      selectOption(nextOption);
+    });
+  });
+}
+
+async function loadNearbySwaps(marker, point, pointIndex, roleLabel, option) {
+  const popupKey = `${option.id || 1}:${pointIndex}:${point.code}`;
+  const requestId = ++nearbyRequestCounter;
+
+  marker.setPopupContent(`
+    <div class="mapPopup mapPopupCompact mapPopupSwap">
+      <div class="mapPopupTitle">${escapeHtml(point.name || point.label || point.code)}</div>
+      <div class="swapLoading">Checking nearby viable airports...</div>
+    </div>
+  `);
+  marker.openPopup();
+
+  try {
+    const res = await fetch('/api/nearby-swaps', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path: option.path || [],
+        clicked_index: pointIndex,
+        radius_km: 120,
+        blocked: Array.from(avoidSelected),
+        allowed: Array.from(airlineSelected),
+        option_id: option.id || 1,
+      }),
+    });
+
+    const data = await res.json();
+
+    if (requestId !== nearbyRequestCounter) {
+      return;
+    }
+
+    if (!res.ok) {
+      marker.setPopupContent(`
+        <div class="mapPopup mapPopupCompact mapPopupSwap">
+          <div class="mapPopupTitle">${escapeHtml(point.name || point.label || point.code)}</div>
+          <div class="swapEmpty">${escapeHtml(data.error || 'Unable to load nearby airports.')}</div>
+        </div>
+      `);
+      marker.openPopup();
+      return;
+    }
+
+    const options = data.options || [];
+    nearbySwapCache.set(popupKey, options);
+
+    marker.setPopupContent(buildNearbyPopupHtml(point, roleLabel, popupKey, options));
+    marker.openPopup();
+
+    setTimeout(() => {
+      bindSwapButtonsForPopup(popupKey);
+    }, 0);
+  } catch (_err) {
+    marker.setPopupContent(`
+      <div class="mapPopup mapPopupCompact mapPopupSwap">
+        <div class="mapPopupTitle">${escapeHtml(point.name || point.label || point.code)}</div>
+        <div class="swapEmpty">Unable to load nearby airports right now.</div>
+      </div>
+    `);
+    marker.openPopup();
+  }
+}
+
+function drawRoute(option) {
   if (!map) return;
-  clearMap();
+  clearMap(false);
 
   const airports = window.__AIRPORTS__ || [];
   const byCode = {};
-  airports.forEach(a => (byCode[a.code] = a));
+  airports.forEach(a => {
+    byCode[a.code] = a;
+  });
 
-  const coords = path
+  const path = option.path || [];
+  const legs = option.legs || [];
+
+  const points = path
     .filter(code => byCode[code])
-    .map(code => [byCode[code].lat, byCode[code].lon]);
+    .map(code => ({
+      code,
+      label: byCode[code].label,
+      name: byCode[code].name || byCode[code].label,
+      city: byCode[code].city || '',
+      country: byCode[code].country || '',
+      lat: byCode[code].lat,
+      lon: byCode[code].lon,
+    }));
 
-  if (coords.length < 2) return;
-
-  routeLine = L.polyline(coords, { color: '#2563eb', weight: 6, opacity: 0.95 }).addTo(map);
-  map.fitBounds(routeLine.getBounds(), { padding: [30, 30] });
-
-  const startM = L.circleMarker(coords[0], { radius: 7, color: '#16a34a', fillColor: '#16a34a', fillOpacity: 1 }).addTo(map);
-  startM.bindTooltip(`Start: ${path[0]}`);
-  markers.push(startM);
-
-  const endM = L.circleMarker(coords[coords.length - 1], { radius: 7, color: '#ef4444', fillColor: '#ef4444', fillOpacity: 1 }).addTo(map);
-  endM.bindTooltip(`End: ${path[path.length - 1]}`);
-  markers.push(endM);
-
-  for (let i = 1; i < coords.length - 1; i++) {
-    const mid = L.circleMarker(coords[i], { radius: 5, color: '#1d4ed8', fillColor: '#1d4ed8', fillOpacity: 0.85 }).addTo(map);
-    mid.bindTooltip(path[i]);
-    markers.push(mid);
+  if (points.length < 2) {
+    clearMap(true);
+    return;
   }
+
+  const bounds = L.latLngBounds(points.map(p => [p.lat, p.lon]));
+  map.fitBounds(bounds, { padding: [30, 30] });
+
+  legs.forEach((leg) => {
+    const fromAirport = byCode[leg.from_code];
+    const toAirport = byCode[leg.to_code];
+    if (!fromAirport || !toAirport) return;
+
+    const coords = [
+      [fromAirport.lat, fromAirport.lon],
+      [toAirport.lat, toAirport.lon]
+    ];
+
+    const airlineCodes = (leg.airlines || [])
+      .map(a => a.code)
+      .filter(Boolean)
+      .join(', ') || '—';
+
+    const airlineNames = (leg.airlines || [])
+      .map(a => a.name)
+      .filter(Boolean)
+      .join(', ') || 'Unknown';
+
+    const hoverText = `
+  <div class="mapTooltipTitle">${leg.from_code} → ${leg.to_code}</div>
+  <div class="mapTooltipSub">${fmtDuration(leg.minutes)}</div>
+`;
+
+    const popupText = `
+  <div class="mapPopup">
+    <div class="mapPopupTitle">${leg.from_code} → ${leg.to_code}</div>
+    <div class="mapPopupSub">${airlineCodes} • ${fmtDuration(leg.minutes)}</div>
+
+    <div class="mapPopupGrid">
+      <div class="mapPopupItem">
+        <div class="mapPopupLabel">Airline</div>
+        <div class="mapPopupValue">${airlineNames}</div>
+      </div>
+      <div class="mapPopupItem">
+        <div class="mapPopupLabel">Price</div>
+        <div class="mapPopupValue">SGD ${Number(leg.price || 0).toFixed(2)}</div>
+      </div>
+      <div class="mapPopupItem">
+        <div class="mapPopupLabel">Distance</div>
+        <div class="mapPopupValue">${Math.round(Number(leg.km || 0))} km</div>
+      </div>
+      <div class="mapPopupItem">
+        <div class="mapPopupLabel">Departures</div>
+        <div class="mapPopupValue">${(leg.departures && leg.departures.length) ? leg.departures.slice(0, 3).join(', ') : '—'}</div>
+      </div>
+    </div>
+  </div>
+`;
+
+    const line = L.polyline(coords, {
+      color: '#2563eb',
+      weight: 7,
+      opacity: 0.95,
+      interactive: true
+    }).addTo(map);
+
+    line.bindTooltip(hoverText, {
+      sticky: true,
+      direction: 'top',
+      opacity: 0.95
+    });
+
+    line.bindPopup(popupText);
+
+    line.on('mouseover', function () {
+      this.openTooltip();
+    });
+
+    line.on('mouseout', function () {
+      this.closeTooltip();
+    });
+
+    routeLines.push(line);
+  });
+
+  points.forEach((p, idx) => {
+    const isStart = idx === 0;
+    const isEnd = idx === points.length - 1;
+
+    const roleKey = isStart ? 'start' : isEnd ? 'end' : 'layover';
+    const roleLabel = isStart ? 'Start airport' : isEnd ? 'Destination airport' : `Layover ${idx}`;
+
+    const marker = L.marker([p.lat, p.lon], {
+      icon: makeAirportIcon(roleKey),
+      interactive: true
+    }).addTo(map);
+
+    const airportTitle = p.name && p.name !== p.label ? p.name : p.label;
+    const airportSub = [p.city, p.country].filter(Boolean).join(', ');
+
+    marker.bindTooltip(
+      `<div><b>${p.code}</b>${airportSub ? ` — ${airportSub}` : ''}</div>`,
+      {
+        sticky: true,
+        direction: 'top',
+        opacity: 0.95
+      }
+    );
+
+    marker.bindPopup(`
+      <div class="mapPopup mapPopupCompact">
+        <div class="mapPopupTitle">${airportTitle}</div>
+
+        <div class="mapPopupList">
+          <div class="mapPopupRow">
+            <span class="mapPopupRowLabel">Code</span>
+            <span class="mapPopupRowValue">${p.code}</span>
+          </div>
+          <div class="mapPopupRow">
+            <span class="mapPopupRowLabel">Role</span>
+            <span class="mapPopupRowValue">${roleLabel}</span>
+          </div>
+        </div>
+      </div>
+    `, {
+      className: 'nearby-swap-popup'
+    });
+
+    marker.on('mouseover', function () {
+      this.openTooltip();
+    });
+
+    marker.on('mouseout', function () {
+      this.closeTooltip();
+    });
+
+    marker.on('click', function () {
+      loadNearbySwaps(marker, p, idx, roleLabel, option);
+    });
+
+    markers.push(marker);
+  });
+
+  setTimeout(() => map.invalidateSize(), 0);
 }
 
 function setViewMoreVisible(show) {
   const btn = $('#viewMoreBtn');
+  const holder = $('#viewMoreWrap');
   if (!btn) return;
+
   btn.style.display = show ? 'inline-flex' : 'none';
+  if (holder) {
+    holder.style.display = show ? 'flex' : 'none';
+  }
+}
+
+function placeViewMoreAtBottom() {
+  const btn = $('#viewMoreBtn');
+  const wrap = $('#options');
+  if (!btn || !wrap) return;
+
+  let holder = $('#viewMoreWrap');
+  if (!holder) {
+    holder = document.createElement('div');
+    holder.id = 'viewMoreWrap';
+    holder.style.display = 'flex';
+    holder.style.justifyContent = 'center';
+    holder.style.margin = '18px 0 8px 0';
+    holder.style.width = '100%';
+  }
+
+  holder.appendChild(btn);
+  wrap.insertAdjacentElement('afterend', holder);
+  btn.textContent = '+ View more routes';
+}
+
+function renderEmptyState(message = 'No routes found for the current filters.') {
+  const wrap = $('#options');
+  const details = $('#details');
+  if (wrap) {
+    wrap.innerHTML = `<div class="emptyState">${message}</div>`;
+  }
+  if (details) {
+    details.innerHTML = `<p class="detailsSub">${message}</p>`;
+  }
+  selectedOption = null;
+  nearbySwapCache.clear();
+  clearMap(true);
 }
 
 function renderOptions(options) {
   const wrap = $('#options');
   if (!wrap) return;
+
   wrap.innerHTML = '';
+  nearbySwapCache.clear();
+  selectedOption = null;
+
+  if (!options || options.length === 0) {
+    renderEmptyState();
+    return;
+  }
 
   options.forEach((o, idx) => {
     const div = document.createElement('div');
@@ -131,15 +568,18 @@ function renderOptions(options) {
     wrap.appendChild(div);
   });
 
-  if (options.length) selectOption(options[0]);
+  selectOption(options[0]);
+  placeViewMoreAtBottom();
 }
 
 function selectOption(option) {
+  selectedOption = option;
+
   document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
   const card = document.querySelector(`.card[data-id="${option.id}"]`);
   if (card) card.classList.add('selected');
 
-  drawRoute(option.path);
+  drawRoute(option);
   renderDetails(option);
 }
 
@@ -163,9 +603,9 @@ function addMinutesToHHMM(hhmm, addMin) {
 }
 
 function airlinesSummary(airlines) {
-  if (!airlines || airlines.length === 0) return { names: "Unknown", codes: "—" };
-  const names = airlines.map(a => a.name).filter(Boolean).join(", ") || "Unknown";
-  const codes = airlines.map(a => a.code).filter(Boolean).join(", ") || "—";
+  if (!airlines || airlines.length === 0) return { names: 'Unknown', codes: '—' };
+  const names = airlines.map(a => a.name).filter(Boolean).join(', ') || 'Unknown';
+  const codes = airlines.map(a => a.code).filter(Boolean).join(', ') || '—';
   return { names, codes };
 }
 
@@ -191,8 +631,8 @@ function renderDetails(option) {
 
   const legsHtml = (option.legs || []).map((leg) => {
     const a = airlinesSummary(leg.airlines);
-    const depart = (leg.departures && leg.departures.length) ? leg.departures[0] : "—";
-    const arrive = depart !== "—" ? (addMinutesToHHMM(depart, leg.minutes) || "—") : "—";
+    const depart = (leg.departures && leg.departures.length) ? leg.departures[0] : '—';
+    const arrive = depart !== '—' ? (addMinutesToHHMM(depart, leg.minutes) || '—') : '—';
 
     return `
       <div class="legRow">
@@ -224,7 +664,7 @@ function renderDetails(option) {
 
         <div class="legSubLine">
           <div><b>Airlines:</b> ${a.names}</div>
-          <div><b>Departures:</b> ${(leg.departures && leg.departures.length) ? leg.departures.slice(0, 6).join(", ") : "—"}</div>
+          <div><b>Departures:</b> ${(leg.departures && leg.departures.length) ? leg.departures.slice(0, 6).join(', ') : '—'}</div>
         </div>
 
         <div class="legBadges">
@@ -234,7 +674,20 @@ function renderDetails(option) {
         </div>
       </div>
     `;
-  }).join("");
+  }).join('');
+
+  const actionHtml = option.__isSwapped
+    ? `
+      <div class="detailsSub" style="margin-top:10px;">
+        Export/print links are hidden for swapped nearby-airport routes for now.
+      </div>
+    `
+    : `
+      <div style="display:flex; gap:10px; flex-wrap:wrap;">
+        <a class="primary" href="/print?${params}" target="_blank" style="text-decoration:none;">Print itinerary</a>
+        <a class="primary" href="/export/csv?${params}" style="text-decoration:none;">Download CSV</a>
+      </div>
+    `;
 
   d.innerHTML = `
     <p class="detailsTitle">Selected route</p>
@@ -249,20 +702,15 @@ function renderDetails(option) {
 
     <div class="divider"></div>
 
-    <div style="display:flex; gap:10px; flex-wrap:wrap;">
-      <a class="primary" href="/print?${params}" target="_blank" style="text-decoration:none;">Print itinerary</a>
-    </div>
+    ${actionHtml}
 
     <div class="divider"></div>
 
     <p class="detailsTitle">Leg details</p>
     <p class="detailsSub">Each leg is one clean row</p>
-
     ${legsHtml}
   `;
 }
-
-/* ---------- Sidebar checkbox lists ---------- */
 
 function buildList(containerId, items, getKey, getMain, getSub, selectedSet) {
   const container = $(containerId);
@@ -282,6 +730,7 @@ function buildList(containerId, items, getKey, getMain, getSub, selectedSet) {
     cb.addEventListener('change', () => {
       if (cb.checked) selectedSet.add(key);
       else selectedSet.delete(key);
+      if (selectedOption) queueLiveSearch();
     });
 
     const text = document.createElement('div');
@@ -344,14 +793,21 @@ function initFilterLists() {
   avoidSearch?.addEventListener('input', renderAvoid);
   airlineSearch?.addEventListener('input', renderAirlines);
 
-  $('#clearAvoid')?.addEventListener('click', () => { avoidSelected.clear(); renderAvoid(); });
-  $('#clearAirlines')?.addEventListener('click', () => { airlineSelected.clear(); renderAirlines(); });
+  $('#clearAvoid')?.addEventListener('click', () => {
+    avoidSelected.clear();
+    renderAvoid();
+    if (selectedOption) queueLiveSearch();
+  });
+
+  $('#clearAirlines')?.addEventListener('click', () => {
+    airlineSelected.clear();
+    renderAirlines();
+    if (selectedOption) queueLiveSearch();
+  });
 
   renderAvoid();
   renderAirlines();
 }
-
-/* ---------- Search ---------- */
 
 async function search(resetLimit = false) {
   if (resetLimit) currentLimit = window.__DEFAULT_LIMIT__ || 6;
@@ -364,14 +820,16 @@ async function search(resetLimit = false) {
   const blocked = Array.from(avoidSelected);
   const allowed = Array.from(airlineSelected);
 
+  if (!start || !goal) {
+    alert('Please select both a start and destination airport.');
+    return;
+  }
+
   const res = await fetch('/api/search', {
     method: 'POST',
-    headers: { 'Content-Type':'application/json' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      start, goal, mode, max_hops,
-      limit: currentLimit,
-      blocked,
-      allowed,
+      start, goal, mode, max_hops, limit: currentLimit, blocked, allowed,
     })
   });
 
@@ -397,7 +855,6 @@ function initCollapsibles() {
       btn.textContent = open ? 'Hide' : 'Show';
     };
 
-    // default open
     setOpen(true);
 
     btn.addEventListener('click', () => {
@@ -415,6 +872,7 @@ window.addEventListener('DOMContentLoaded', () => {
   initMap();
   initFilterLists();
   initCollapsibles();
+  placeViewMoreAtBottom();
 
   $('#searchBtn')?.addEventListener('click', () => search(true));
 

@@ -1,12 +1,29 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, Response
 import glideguru.config as config
 from glideguru.data import load_graph, all_carrier_codes
-from glideguru.algorithms import bfs_hops, yen_k_paths
-from glideguru.routing import totals, weight_fn, score_of
+from glideguru.algorithms import bfs_hops, yen_k_paths, astar, bidirectional_dijkstra
+from glideguru.routing import totals, weight_fn, score_of, top_k_cost_effective, RouteOption
+from glideguru.unionfind import UnionFind
+from glideguru.nearby import get_nearby_viable_swaps
+import time
+import csv
+import io
+
+start_time = time.time()
+
+
+def build_connectivity(gd):
+    uf = UnionFind(gd.graph.keys())
+    for u in gd.graph:
+        for e in gd.graph[u]:
+            uf.union(u, e.dest)
+    return uf
+
 
 app = Flask(__name__)
 
 GD = load_graph(config.DATA_PATH)
+UF = build_connectivity(GD)
 AIRPORTS = GD.airports
 CARRIER_CODES = all_carrier_codes(GD)
 
@@ -45,13 +62,105 @@ def legs_list(path: list[str]) -> list[dict]:
         )
     return legs
 
+def search_paths(start: str, goal: str, mode: str, blocked: set[str], allowed, max_hops: int, want: int):
+    """
+    Centralized search wrapper so /api/search, /print, and export endpoints use
+    the same logic.
+
+    Fewest Connections:
+    - use BFS to get the minimum-hop route first
+    - use Yen to get additional hop-based alternatives
+    - keep all routes up to max_hops
+    - sort by hops first, then time, then price, then distance
+
+    Other modes:
+    - use Yen's K-shortest paths with the relevant weight function
+    """
+    if mode in {"Fewest Connections", "Fewest hops"}:
+        paths: list[list[str]] = []
+
+        # Find the best minimum-hop route within the user's upper-bound slider
+        primary = bfs_hops(
+            GD,
+            start,
+            goal,
+            blocked,
+            allowed,
+            max_hops=max_hops
+        )
+
+        if not primary:
+            return []
+
+        paths.append(primary)
+
+        # Find additional hop-based alternatives, still respecting max_hops
+        alt_paths = yen_k_paths(
+            GD,
+            start,
+            goal,
+            weight_fn("Fewest Connections"),
+            k=want,
+            blocked=blocked,
+            allowed=allowed,
+            max_hops=max_hops,
+            use_astar=False,
+        )
+
+        for candidate in alt_paths:
+            hops = len(candidate) - 1
+            if candidate not in paths and hops <= max_hops:
+                paths.append(candidate)
+        # Sort so the fewest-hop routes appear first.
+        # Among equal-hop routes, prefer lower time, then lower price, then shorter distance.
+        paths.sort(
+            key=lambda p: (
+                totals(GD, p)[3],  # hops
+                totals(GD, p)[1],  # minutes
+                totals(GD, p)[2],  # price
+                totals(GD, p)[0],  # km
+            )
+        )
+
+        return paths
+
+    wf = weight_fn(mode)
+    paths: list[list[str]] = []
+    primary, _ = bidirectional_dijkstra(GD, start, goal, wf, blocked, allowed, max_hops)
+    if primary:
+        paths.append(primary)
+
+    use_astar = (mode == "Shortest")
+    for candidate in yen_k_paths(
+        GD,
+        start,
+        goal,
+        wf,
+        k=max(want, 1),
+        blocked=blocked,
+        allowed=allowed,
+        max_hops=max_hops,
+        use_astar=use_astar,
+    ):
+        if candidate not in paths:
+            paths.append(candidate)
+    return paths
+
 
 @app.get("/")
 def index():
     airports = [
-        {"code": c, "label": airport_label(c), "lat": AIRPORTS[c].lat, "lon": AIRPORTS[c].lon}
-        for c in sorted(AIRPORTS)
-    ]
+    {
+        "code": c,
+        "label": airport_label(c),
+        "name": AIRPORTS[c].name,
+        "city": AIRPORTS[c].city,
+        "country": AIRPORTS[c].country,
+        "lat": AIRPORTS[c].lat,
+        "lon": AIRPORTS[c].lon,
+    }
+    for c in sorted(AIRPORTS)
+]
     return render_template(
         "index.html",
         app_name=config.APP_NAME,
@@ -76,59 +185,77 @@ def api_search():
     allowed_list = body.get("allowed", [])
     allowed = set(allowed_list) if allowed_list else None
 
-    if not start or not goal or start == goal:
-        return jsonify({"error": "Invalid start/goal"}), 400
+    if start not in AIRPORTS or goal not in AIRPORTS:
+        return jsonify({"error": "Invalid airport"}), 400
+
+    if UF.find(start) != UF.find(goal):
+        return jsonify({"options": [], "has_more": False})
 
     blocked.discard(start)
     blocked.discard(goal)
 
-    want = max(1, min(limit + 1, 60))  # safety cap
-
-    if mode == "Fewest hops":
-        paths: list[list[str]] = []
-        p = bfs_hops(GD, start, goal, blocked, allowed, max_hops=max_hops)
-        if p:
-            paths.append(p)
-
-        alt = yen_k_paths(
-            GD, start, goal, weight_fn("Cost-effective"),
-            k=want, blocked=blocked, allowed=allowed, max_hops=max_hops
-        )
-        for x in alt:
-            if x not in paths:
-                paths.append(x)
-
-        has_more = len(paths) > limit
-        paths = paths[:limit]
-        wf = weight_fn("Fewest hops")
+    if mode in {"Fewest Connections", "Fewest hops"}:
+        # Ask for a much larger candidate pool first so valid low-hop alternatives
+        # do not disappear just because the visible limit is small.
+        want = max(20, min(limit * 5, 60))
     else:
-        wf = weight_fn(mode)
-        paths = yen_k_paths(GD, start, goal, wf, k=want, blocked=blocked, allowed=allowed, max_hops=max_hops)
-        has_more = len(paths) > limit
-        paths = paths[:limit]
+        want = max(1, min(limit + 1, 60))
+
+    wf = weight_fn(mode)
+    all_paths = search_paths(start, goal, mode, blocked, allowed, max_hops, want)
+    has_more = len(all_paths) > limit
+    paths = all_paths[:limit]
+    
 
     options = []
     for i, p in enumerate(paths, 1):
         km, mins, price, hops = totals(GD, p)
-        options.append(
-            {
-                "id": i,
-                "path": p,
-                "km": float(km),
-                "minutes": int(mins),
-                "price": float(price),
-                "hops": int(hops),
-                "score": float(score_of(GD, p, wf)),
-                "legs": legs_list(p),
-            }
-        )
+        score = score_of(GD, p, wf)
+        options.append(RouteOption(id=i, path=p, km=km, minutes=mins, price=price, hops=hops, score=score))
 
-    return jsonify({"options": options, "has_more": has_more})
+    if mode == "Cost-effective":
+        options = top_k_cost_effective(options, limit)
+
+    return jsonify(
+        {
+            "options": [
+                {
+                    "id": o.id,
+                    "path": o.path,
+                    "km": o.km,
+                    "minutes": o.minutes,
+                    "price": o.price,
+                    "hops": o.hops,
+                    "score": o.score,
+                    "legs": legs_list(o.path),
+                }
+                for o in options
+            ],
+            "has_more": has_more,
+        }
+    )
 
 
-@app.get("/print")
-def print_view():
-    option_id = request.args.get("id", "1")
+def route_payload(path: list[str], option_id: int, start: str, goal: str, mode: str) -> dict:
+    km, mins, price, hops = totals(GD, path)
+    return {
+        "id": option_id,
+        "title": f"{config.APP_NAME}: {start} → {goal} (Option {option_id})",
+        "path": path,
+        "path_display": " → ".join(path),
+        "mode": mode,
+        "summary": {
+            "km": km,
+            "minutes": mins,
+            "price": price,
+            "connections": hops,
+        },
+        "legs": legs_list(path),
+    }
+
+
+def resolve_route_from_request():
+    option_id = max(1, int(request.args.get("id", "1")))
     start = request.args.get("start")
     goal = request.args.get("goal")
     mode = request.args.get("mode", "Shortest")
@@ -137,59 +264,150 @@ def print_view():
     blocked = set(request.args.get("blocked", "").split(",")) if request.args.get("blocked") else set()
     allowed = set(request.args.get("allowed", "").split(",")) if request.args.get("allowed") else None
 
+    if not start or not goal or start not in AIRPORTS or goal not in AIRPORTS:
+        return None
+
+    if UF.find(start) != UF.find(goal):
+        return None
+
     blocked.discard(start)
     blocked.discard(goal)
 
     want = max(1, min(limit, 60))
-
-    if mode == "Fewest hops":
-        paths: list[list[str]] = []
-        p = bfs_hops(GD, start, goal, blocked, allowed, max_hops=max_hops)
-        if p:
-            paths.append(p)
-        alt = yen_k_paths(GD, start, goal, weight_fn("Cost-effective"), k=want, blocked=blocked, allowed=allowed, max_hops=max_hops)
-        for x in alt:
-            if x not in paths:
-                paths.append(x)
-        paths = paths[:limit]
-    else:
-        paths = yen_k_paths(GD, start, goal, weight_fn(mode), k=want, blocked=blocked, allowed=allowed, max_hops=max_hops)
-
+    paths = search_paths(start, goal, mode, blocked, allowed, max_hops, want)[:limit]
     if not paths:
-        return render_template("print.html", title=f"{config.APP_NAME}: No route", path="No route", km=0, mins=0, price=0, hops=0, table=[])
+        return None
 
-    idx = max(1, min(int(option_id), len(paths))) - 1
-    path = paths[idx]
-    km, mins, price, hops = totals(GD, path)
+    idx = max(1, min(option_id, len(paths))) - 1
+    return route_payload(paths[idx], idx + 1, start, goal, mode)
 
-    # print uses leg list for the table (simple)
+
+@app.get("/export/csv")
+def export_csv():
+    payload = resolve_route_from_request()
+    if payload is None:
+        return jsonify({"error": "No route available for export"}), 404
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["Route", payload["path_display"]])
+    writer.writerow(["Mode", payload["mode"]])
+    writer.writerow(["Total Distance (km)", f"{payload['summary']['km']:.1f}"])
+    writer.writerow(["Total Time (minutes)", payload["summary"]["minutes"]])
+    writer.writerow(["Total Price (SGD)", f"{payload['summary']['price']:.2f}"])
+    writer.writerow(["Connections", payload["summary"]["connections"]])
+    writer.writerow([])
+    writer.writerow([
+        "Leg", "From Code", "From Airport", "From City", "From Country",
+        "To Code", "To Airport", "To City", "To Country", "Distance (km)",
+        "Duration (min)", "Price (SGD)", "Flights/day", "Airline Codes",
+        "Airline Names", "Departures",
+    ])
+    for leg in payload["legs"]:
+        writer.writerow([
+            leg["leg"], leg["from_code"], leg["from_name"], leg["from_city"], leg["from_country"],
+            leg["to_code"], leg["to_name"], leg["to_city"], leg["to_country"], f"{leg['km']:.1f}",
+            leg["minutes"], f"{leg['price']:.2f}", leg["daily"],
+            ", ".join([a["code"] for a in leg["airlines"] if a.get("code")]) or "—",
+            ", ".join([a["name"] for a in leg["airlines"] if a.get("name")]) or "Unknown",
+            ", ".join(leg["departures"]) if leg["departures"] else "—",
+        ])
+
+    return Response(
+        buf.getvalue(),
+        mimetype="text/csv",
+        headers={
+            "Content-Disposition": f"attachment; filename=itinerary_{payload['path'][0]}_{payload['path'][-1]}_option_{payload['id']}.csv"}
+    )
+
+
+@app.get("/print")
+def print_view():
+    payload = resolve_route_from_request()
+    if payload is None:
+        return render_template(
+            "print.html",
+            title=f"{config.APP_NAME}: No route",
+            path="No route",
+            km=0,
+            mins=0,
+            price=0,
+            hops=0,
+            table=[],
+        )
+
     table = []
-    for leg in legs_list(path):
+    for leg in payload["legs"]:
         airline_names = ", ".join([a["name"] for a in leg["airlines"] if a.get("name")]) or "Unknown"
         airline_codes = ", ".join([a["code"] for a in leg["airlines"] if a.get("code")]) or "—"
-        table.append({
-            "leg": leg["leg"],
-            "from": f'{leg["from_name"]} ({leg["from_code"]})',
-            "to": f'{leg["to_name"]} ({leg["to_code"]})',
-            "km": leg["km"],
-            "min": leg["minutes"],
-            "price": leg["price"],
-            "airlines": airline_names,
-            "codes": airline_codes,
-            "daily": leg["daily"],
-            "departures": ", ".join(leg["departures"]) if leg["departures"] else "—",
-        })
+        table.append(
+            {
+                "leg": leg["leg"],
+                "from": f'{leg["from_name"]} ({leg["from_code"]})',
+                "to": f'{leg["to_name"]} ({leg["to_code"]})',
+                "km": leg["km"],
+                "min": leg["minutes"],
+                "price": leg["price"],
+                "airlines": airline_names,
+                "codes": airline_codes,
+                "daily": leg["daily"],
+                "departures": ", ".join(leg["departures"]) if leg["departures"] else "—",
+            }
+        )
 
     return render_template(
         "print.html",
-        title=f"{config.APP_NAME}: {start} → {goal} (Option {idx+1})",
-        path=" → ".join(path),
-        km=km,
-        mins=mins,
-        price=price,
-        hops=hops,
+        title=payload["title"],
+        path=payload["path_display"],
+        km=payload["summary"]["km"],
+        mins=payload["summary"]["minutes"],
+        price=payload["summary"]["price"],
+        hops=payload["summary"]["connections"],
         table=table,
     )
+
+@app.post("/api/nearby-swaps")
+def api_nearby_swaps():
+    data = request.get_json(silent=True) or {}
+
+    raw_path = data.get("path") or []
+    clicked_index = int(data.get("clicked_index", -1))
+    radius_km = float(data.get("radius_km", 120))
+    blocked = {str(x).strip().upper() for x in (data.get("blocked") or []) if str(x).strip()}
+    allowed_raw = [str(x).strip().upper() for x in (data.get("allowed") or []) if str(x).strip()]
+    allowed = set(allowed_raw) if allowed_raw else None
+    option_id = int(data.get("option_id", 1))
+
+    path = [str(x).strip().upper() for x in raw_path if str(x).strip()]
+
+    if len(path) < 2:
+        return jsonify({"error": "Invalid path"}), 400
+
+    if clicked_index < 0 or clicked_index >= len(path):
+        return jsonify({"error": "Invalid clicked index"}), 400
+
+    for code in path:
+        if code not in GD.airports:
+            return jsonify({"error": f"Invalid airport in path: {code}"}), 400
+
+    try:
+        options = get_nearby_viable_swaps(
+            gd=GD,
+            path=path,
+            clicked_index=clicked_index,
+            blocked=blocked,
+            allowed=allowed,
+            radius_km=radius_km,
+            limit=8,
+            option_id=option_id,
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    return jsonify({
+        "clicked_index": clicked_index,
+        "options": options,
+    })
 
 
 if __name__ == "__main__":
